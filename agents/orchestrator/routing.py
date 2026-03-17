@@ -49,7 +49,8 @@ _PRODUCT_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# YouTube reviews are triggered when the query implies wanting video opinions
+# Review intent is detected from explicit language, but for shopping queries
+# we still want review evidence whenever the YouTube agent is available.
 _REVIEW_KEYWORDS = re.compile(
     r"\b(review|opinion|recommend|worth|should i|pros and cons|"
     r"hands on|experience|compared|comparison|vs|versus|best|top)\b",
@@ -86,17 +87,22 @@ def route_query(
 
     # Determine capabilities needed
     needs_products = bool(_PRODUCT_KEYWORDS.search(query))
-    needs_reviews = bool(_REVIEW_KEYWORDS.search(query))
+    explicit_review_intent = bool(_REVIEW_KEYWORDS.search(query))
 
     # For a shopping assistant, if neither keyword matches, default to
     # triggering product discovery (the user typed *something*).
-    if not needs_products and not needs_reviews:
+    if not needs_products and not explicit_review_intent:
         needs_products = True
 
     # If only reviews are requested but we have product discovery,
     # trigger it anyway so we have structured product data to merge.
-    if needs_reviews and not needs_products and has_product_agent:
+    if explicit_review_intent and not needs_products and has_product_agent:
         needs_products = True
+
+    # For shopping queries, product discovery and review evidence are meant
+    # to work together. Once we know we're evaluating products, opt into
+    # YouTube review analysis when that agent is available.
+    needs_reviews = explicit_review_intent or needs_products
 
     decision.needs_product_discovery = needs_products and has_product_agent
     decision.needs_youtube_reviews = needs_reviews and has_youtube_agent

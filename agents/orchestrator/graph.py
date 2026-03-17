@@ -233,7 +233,7 @@ async def execute_youtube_reviews(state: OrchestratorState) -> dict[str, Any]:
     # Determine product names to fetch reviews for
     product_names: list[str] = []
     if product_result and product_result.products:
-        product_names = [p.name for p in product_result.products]
+        product_names = list(dict.fromkeys(p.name for p in product_result.products if p.name))
     else:
         # If no products were discovered, use the original query
         product_names = [state["query"]]
@@ -395,11 +395,16 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
     settings = state["settings"]
     product_result = state.get("product_result")
     review_results = state.get("review_results", {})
+    decision = state.get("routing_decision")
     errors: list[str] = list(state.get("errors", []))
 
     # Determine if we have partial data
     has_products = product_result and len(product_result.products) > 0
     has_reviews = len(review_results) > 0
+    requested_products = bool(decision and decision.needs_product_discovery)
+    requested_reviews = bool(decision and decision.needs_youtube_reviews)
+    missing_requested_products = requested_products and not has_products
+    missing_requested_reviews = requested_reviews and not has_reviews
 
     if not has_products and not has_reviews:
         # Nothing to synthesize
@@ -486,13 +491,13 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
         # Build grounded source links
         sources = _build_source_links(product_result, review_results)
 
-        partial = not has_products or not has_reviews
+        partial = missing_requested_products or missing_requested_reviews
         notes = data.get("notes")
         if partial and not notes:
             missing = []
-            if not has_products:
+            if missing_requested_products:
                 missing.append("product discovery")
-            if not has_reviews:
+            if missing_requested_reviews:
                 missing.append("YouTube reviews")
             notes = f"Partial results — {', '.join(missing)} data was unavailable."
 

@@ -51,6 +51,8 @@ if "langgraph.graph" not in sys.modules:
     sys.modules["langgraph.graph"] = graph_module
 
 from agents.orchestrator import graph as orchestrator_graph
+from agents.orchestrator.routing import route_query
+from common.a2a_models import AgentCard
 from common.a2a_models import (
     Product,
     ProductDiscoveryResult,
@@ -64,6 +66,36 @@ from common.a2a_models import (
 
 
 class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
+    def test_route_query_enables_reviews_for_product_lookups(self):
+        decision = route_query(
+            query="LG UltraGear GX9",
+            discovered_agents={
+                "product-discovery": AgentCard(
+                    name="Product Discovery Agent",
+                    description="Product agent",
+                    url="http://localhost:5002/a2a/v1",
+                    skills=[],
+                ),
+                "youtube-review": AgentCard(
+                    name="YouTube Product Review Agent",
+                    description="Review agent",
+                    url="http://localhost:5001/a2a/v1",
+                    skills=[],
+                ),
+            },
+            card_urls={
+                "product-discovery": "http://localhost:5002/.well-known/agent-card.json",
+                "youtube-review": "http://localhost:5001/.well-known/agent-card.json",
+            },
+        )
+
+        self.assertTrue(decision.needs_product_discovery)
+        self.assertTrue(decision.needs_youtube_reviews)
+        self.assertEqual(
+            [route.agent_name for route in decision.routes],
+            ["product-discovery", "youtube-review"],
+        )
+
     async def test_resolve_send_message_result_polls_until_terminal(self):
         initial_task = Task(status=TaskStatus(state="working", message=make_agent_message("working")))
         completed_task = Task(
@@ -175,6 +207,62 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unified.recommendations[0].product_name, "Sony WF-1000XM5")
         self.assertEqual(unified.recommendations[0].sentiment, "positive")
         self.assertEqual(unified.sources[0].url, "https://youtube.com/watch?v=abc123")
+
+    async def test_synthesize_does_not_mark_missing_reviews_when_not_requested(self):
+        product_result = ProductDiscoveryResult(
+            query="lg monitor",
+            products=[
+                Product(
+                    name="LG UltraGear GX9",
+                    price="$1,699",
+                    rating=None,
+                    url="https://merchant.example/lg",
+                    key_features=["OLED"],
+                    source="Example Merchant",
+                    evidence_urls=["https://merchant.example/lg"],
+                    confidence=0.88,
+                )
+            ],
+            summary="One product",
+        )
+        llm_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"recommendations":[{"rank":1,"product_name":"LG UltraGear GX9",'
+                            '"price":"$1,699","rating":null,"sentiment":null,"score":0.88,'
+                            '"rationale":"Great monitor.","pros":["OLED"],"cons":[],"confidence":0.88}],'
+                            '"notes":null}'
+                        )
+                    )
+                )
+            ]
+        )
+        fake_llm = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=AsyncMock(return_value=llm_response))
+            )
+        )
+
+        result = await orchestrator_graph.synthesize(
+            {
+                "query": "lg monitor",
+                "settings": SimpleNamespace(OPENAI_MODEL="gpt-4o-mini", OPENAI_API_KEY="oa-key"),
+                "product_result": product_result,
+                "review_results": {},
+                "routing_decision": SimpleNamespace(
+                    needs_product_discovery=True,
+                    needs_youtube_reviews=False,
+                ),
+                "errors": [],
+                "llm_client": fake_llm,
+            }
+        )
+
+        unified = result["unified_response"]
+        self.assertFalse(unified.partial)
+        self.assertIsNone(unified.notes)
 
 
 class RunQueryTests(unittest.IsolatedAsyncioTestCase):
