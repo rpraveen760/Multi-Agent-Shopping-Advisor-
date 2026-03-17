@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Federated Multi-Agent System</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-secondary: #111827;
+      --bg-card: #1a2234;
+      --bg-card-hover: #1f2a40;
+      --border: #2a3548;
+      --border-accent: #3b82f6;
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --green: #22c55e;
+      --green-dim: #166534;
+      --yellow: #eab308;
+      --yellow-dim: #854d0e;
+      --red: #ef4444;
+      --red-dim: #991b1b;
+      --cyan: #06b6d4;
+      --orange: #f97316;
+    }
+
+    body {
+      font-family: "Segoe UI Variable", "Trebuchet MS", sans-serif;
+      background: radial-gradient(circle at top, #13213d 0%, var(--bg-primary) 48%);
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    a { color: inherit; }
+    .hidden { display: none !important; }
+    #root { min-height: 100vh; display: flex; flex-direction: column; }
+
+    .nav {
+      background: rgba(17, 24, 39, 0.92);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .nav-logo {
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--accent);
+      padding: 1rem 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .nav-logo svg { width: 22px; height: 22px; }
+    .nav-tabs { display: flex; gap: 0; }
+
+    .nav-tab {
+      padding: 1rem 1.5rem;
+      cursor: pointer;
+      color: var(--text-secondary);
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      transition: all 0.2s;
+      font-size: 0.9rem;
+      font-weight: 600;
+      user-select: none;
+    }
+
+    .nav-tab:hover { color: var(--text-primary); }
+    .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .nav-status {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .status-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.warn { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+    .status-dot.err { background: var(--red); }
+    .status-dot.loading { background: var(--yellow); animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .main {
+      flex: 1;
+      padding: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .search-section { margin-bottom: 2rem; }
+
+    .search-box {
+      display: flex;
+      gap: 0.75rem;
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.75rem;
+      transition: border-color 0.2s;
+      box-shadow: 0 14px 30px rgba(10, 14, 23, 0.22);
+    }
+
+    .search-box:focus-within { border-color: var(--accent); }
+
+    .search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text-primary);
+      font-size: 1rem;
+      padding: 0.5rem;
+    }
+
+    .search-input::placeholder { color: var(--text-muted); }
+
+    .search-btn {
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 0.6rem 1.5rem;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.2s, opacity 0.2s;
+      white-space: nowrap;
+    }
+
+    .search-btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .search-hints {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .hint-chip {
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 0.3rem 0.8rem;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .hint-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+    .loading-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.5rem;
+      padding: 4rem 0;
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-steps { display: flex; flex-direction: column; gap: 0.5rem; }
+    .loading-step { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-secondary); }
+    .loading-step.active { color: var(--accent); }
+    .loading-step.done { color: var(--green); }
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      gap: 1rem;
+    }
+
+    .results-header h2 { font-size: 1.3rem; font-weight: 600; }
+    .results-meta { font-size: 0.8rem; color: var(--text-muted); }
+
+    .partial-banner,
+    .empty-card,
+    .error-box {
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.9rem;
+    }
+
+    .partial-banner {
+      background: var(--yellow-dim);
+      border: 1px solid var(--yellow);
+      color: var(--yellow);
+    }
+
+    .error-box {
+      background: var(--red-dim);
+      border: 1px solid var(--red);
+      color: #fca5a5;
+    }
+
+    .empty-card {
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      text-align: center;
+    }
+
+    .rec-card {
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+      transition: all 0.2s;
+      box-shadow: 0 12px 24px rgba(10, 14, 23, 0.18);
+    }
+
+    .rec-card:hover {
+      border-color: var(--border-accent);
+      background: var(--bg-card-hover);
+      transform: translateY(-1px);
+    }
+
+    .rec-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+      gap: 1rem;
+    }
+
+    .rec-rank {
+      background: var(--accent);
+      color: white;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+
+    .rec-rank.gold { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    .rec-rank.silver { background: linear-gradient(135deg, #9ca3af, #6b7280); }
+    .rec-rank.bronze { background: linear-gradient(135deg, #d97706, #92400e); }
+    .rec-info { flex: 1; }
+    .rec-name { font-size: 1.1rem; font-weight: 600; }
+
+    .rec-meta {
+      display: flex;
+      gap: 1rem;
+      margin-top: 0.25rem;
+      flex-wrap: wrap;
+    }
+
+    .rec-meta-item { font-size: 0.8rem; color: var(--text-secondary); }
+    .rec-score-wrap { text-align: right; min-width: 112px; }
+
+    .rec-score {
+      font-size: 1.6rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .rec-confidence { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+    .rec-rationale { font-size: 0.88rem; color: var(--text-secondary); margin: 0.75rem 0; line-height: 1.5; }
+
+    .rec-pros-cons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .pc-col h4 {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+    }
+
+    .pc-col.pros h4 { color: var(--green); }
+    .pc-col.cons h4 { color: var(--red); }
+
+    .pc-item {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      padding: 0.2rem 0;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.4rem;
+    }
+
+    .pc-item .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      margin-top: 6px;
+      flex-shrink: 0;
+    }
+
+    .pros .dot { background: var(--green); }
+    .cons .dot { background: var(--red); }
+
+    .sentiment-badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .sentiment-positive { background: var(--green-dim); color: var(--green); }
+    .sentiment-mixed { background: var(--yellow-dim); color: var(--yellow); }
+    .sentiment-negative { background: var(--red-dim); color: var(--red); }
+    .sentiment-unknown { background: rgba(100, 116, 139, 0.2); color: var(--text-secondary); }
+
+    .sources-section {
+      margin-top: 2rem;
+      border-top: 1px solid var(--border);
+      padding-top: 1.5rem;
+    }
+
+    .sources-section h3 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; }
+
+    .sources-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .source-link {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      text-decoration: none;
+      color: var(--text-primary);
+      transition: all 0.2s;
+      font-size: 0.85rem;
+      overflow: hidden;
+    }
+
+    .source-link:hover { border-color: var(--accent); background: var(--bg-card-hover); }
+    .source-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 0.75rem; font-weight: 700; }
+    .source-icon.product { background: var(--accent); color: white; }
+    .source-icon.video { background: var(--red); color: white; }
+    .source-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .source-agent { font-size: 0.7rem; color: var(--text-muted); }
+
+    .empty-state { text-align: center; padding: 4rem 0; color: var(--text-muted); }
+
+    .empty-state-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 72px;
+      height: 72px;
+      margin-bottom: 1rem;
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(6, 182, 212, 0.15));
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      color: var(--accent);
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+    .features-hero {
+      text-align: center;
+      padding: 3rem 0 2rem;
+    }
+
+    .features-hero h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--cyan), #8dd0ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 0.75rem;
+    }
+
+    .features-hero p {
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    .arch-diagram {
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2.5rem;
+      margin: 2rem 0;
+      text-align: center;
+      box-shadow: 0 18px 40px rgba(10, 14, 23, 0.25);
+    }
+
+    .arch-nodes { display: flex; justify-content: center; align-items: flex-start; gap: 2rem; flex-wrap: wrap; }
+
+    .arch-node {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      min-width: 200px;
+      text-align: center;
+      transition: all 0.3s;
+    }
+
+    .arch-node:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .arch-node h4 { font-size: 0.9rem; margin-bottom: 0.3rem; }
+    .arch-node p { font-size: 0.78rem; color: var(--text-secondary); }
+    .arch-node .port { font-size: 0.7rem; color: var(--accent); font-weight: 600; margin-top: 0.3rem; }
+    .arch-node.orchestrator { border-color: var(--accent); }
+    .arch-node.youtube { border-color: var(--red); }
+    .arch-node.product { border-color: var(--green); }
+    .arch-arrow { color: var(--text-muted); font-size: 1.5rem; align-self: center; }
+    .arch-label { font-size: 0.72rem; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.5rem; }
+
+    .pipeline-section { margin: 2.5rem 0; }
+
+    .pipeline-section h2 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .pipeline-steps { display: flex; flex-direction: column; gap: 0; }
+    .pipeline-step { display: flex; align-items: flex-start; gap: 1rem; position: relative; }
+
+    .step-marker {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.8rem;
+      flex-shrink: 0;
+      z-index: 1;
+    }
+
+    .step-line {
+      position: absolute;
+      left: 17px;
+      top: 36px;
+      width: 2px;
+      height: calc(100%);
+      background: var(--border);
+    }
+
+    .step-content {
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      flex: 1;
+      margin-bottom: 1rem;
+    }
+
+    .step-content h4 { font-size: 0.9rem; margin-bottom: 0.25rem; }
+    .step-content p { font-size: 0.82rem; color: var(--text-secondary); }
+
+    .step-1 .step-marker { background: var(--accent); color: white; }
+    .step-2 .step-marker { background: #0f766e; color: white; }
+    .step-3 .step-marker { background: var(--green); color: white; }
+    .step-4 .step-marker { background: var(--red); color: white; }
+    .step-5 .step-marker { background: var(--orange); color: white; }
+
+    .feature-grid,
+    .protocol-grid {
+      display: grid;
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+
+    .feature-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+    .protocol-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+
+    .feature-card,
+    .protocol-card {
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: all 0.2s;
+    }
+
+    .feature-card:hover,
+    .protocol-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .feature-card h4 {
+      font-size: 0.95rem;
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .feature-card p,
+    .protocol-card p {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+    }
+
+    .feature-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: rgba(59, 130, 246, 0.14);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+
+    .protocol-card h4 {
+      font-size: 0.88rem;
+      color: var(--accent);
+      margin-bottom: 0.3rem;
+    }
+
+    @media (max-width: 768px) {
+      .nav { padding: 0 1rem; gap: 1rem; flex-wrap: wrap; }
+      .nav-status { margin-left: 0; padding-bottom: 1rem; }
+      .main { padding: 1rem; }
+      .rec-pros-cons { grid-template-columns: 1fr; }
+      .sources-grid { grid-template-columns: 1fr; }
+      .arch-nodes { flex-direction: column; align-items: center; }
+      .arch-arrow { transform: rotate(90deg); }
+      .features-hero h1 { font-size: 1.6rem; }
+      .results-header { flex-direction: column; align-items: flex-start; }
+      .rec-top { flex-direction: column; }
+      .rec-score-wrap { text-align: left; }
+      .search-box { flex-direction: column; }
+      .search-btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <nav class="nav">
+      <div class="nav-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 2v4m0 12v4m-7.07-2.93 2.83-2.83m8.48-8.48 2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83"></path>
+        </svg>
+        FMAS
+      </div>
+      <div class="nav-tabs">
+        <button type="button" class="nav-tab active" data-page="query">Search</button>
+        <button type="button" class="nav-tab" data-page="features">How It Works</button>
+      </div>
+      <div class="nav-status">
+        <span id="status-dot" class="status-dot loading"></span>
+        <span id="status-label" style="color: var(--yellow);">Checking system</span>
+      </div>
+    </nav>
+
+    <main class="main">
+      <section id="query-page">
+        <div class="search-section">
+          <div class="search-box">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.35-4.35"></path>
+            </svg>
+            <input id="query-input" class="search-input" placeholder="What are you shopping for?" autocomplete="off" />
+            <button id="search-button" class="search-btn" type="button">Search</button>
+          </div>
+          <div id="search-hints" class="search-hints"></div>
+        </div>
+
+        <div id="loading-container" class="loading-container hidden">
+          <div class="spinner"></div>
+          <div id="loading-steps" class="loading-steps"></div>
+        </div>
+
+        <div id="error-box" class="error-box hidden"></div>
+        <div id="partial-banner" class="partial-banner hidden"></div>
+
+        <div id="results-container" class="hidden">
+          <div class="results-header">
+            <h2>Recommendations</h2>
+            <span id="results-meta" class="results-meta"></span>
+          </div>
+          <div id="recommendations-list"></div>
+          <div id="sources-section" class="sources-section hidden">
+            <h3 id="sources-title">Sources</h3>
+            <div id="sources-grid" class="sources-grid"></div>
+          </div>
+        </div>
+
+        <div id="empty-state" class="empty-state">
+          <div class="empty-state-badge">FMAS</div>
+          <p>Enter a shopping query to get AI-powered recommendations.</p>
+          <p style="font-size: 0.82rem; margin-top: 0.5rem;">
+            Powered by federated agents with the A2A protocol and LangGraph orchestration.
+          </p>
+        </div>
+      </section>
+
+      <section id="features-page" class="hidden">
+        <div class="features-hero">
+          <h1>Federated Multi-Agent System</h1>
+          <p>
+            Autonomous agents collaborate via the A2A protocol, orchestrated by LangGraph,
+            to deliver grounded product recommendations from real-world data.
+          </p>
+        </div>
+
+        <div class="arch-diagram">
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1.5rem; text-transform: uppercase; letter-spacing: 0.1em;">
+            System Architecture
+          </div>
+          <div class="arch-nodes">
+            <div class="arch-node orchestrator">
+              <h4>Central Orchestrator</h4>
+              <p>LangGraph StateGraph</p>
+              <p>Deterministic routing + GPT synthesis</p>
+              <div class="port">:8000</div>
+              <div class="arch-label">FastAPI</div>
+            </div>
+            <div class="arch-arrow">&#8595;</div>
+            <div style="display: flex; gap: 2rem; flex-wrap: wrap; justify-content: center;">
+              <div class="arch-node product">
+                <h4>Product Discovery</h4>
+                <p>DuckDuckGo + Web Enrichment</p>
+                <p>URL grounding + MCP tool</p>
+                <div class="port">:5002</div>
+                <div class="arch-label">A2A + MCP</div>
+              </div>
+              <div class="arch-node youtube">
+                <h4>YouTube Review</h4>
+                <p>Data API v3 + Transcripts</p>
+                <p>Sentiment analysis</p>
+                <div class="port">:5001</div>
+                <div class="arch-label">A2A</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pipeline-section">
+          <h2>LangGraph Pipeline</h2>
+          <div class="pipeline-steps">
+            <div class="pipeline-step step-1">
+              <div class="step-marker">1</div>
+              <div class="step-line"></div>
+              <div class="step-content">
+                <h4>Discover Agents</h4>
+                <p>Fetch Agent Cards from <code>/.well-known/agent-card.json</code>. Each card declares capabilities, skills, and the JSON-RPC endpoint URL.</p>
+              </div>
+            </div>
+            <div class="pipeline-step step-2">
+              <div class="step-marker">2</div>
+              <div class="step-line"></div>
+              <div class="step-content">
+                <h4>Route Tasks</h4>
+                <p>Deterministic keyword-based routing decides which agents to invoke without spending latency on LLM planning.</p>
+              </div>
+            </div>
+            <div class="pipeline-step step-3">
+              <div class="step-marker">3</div>
+              <div class="step-line"></div>
+              <div class="step-content">
+                <h4>Execute Product Discovery</h4>
+                <p>Send the query via A2A. The product agent searches DuckDuckGo, enriches candidates, and grounds all returned product links against retrieved evidence.</p>
+              </div>
+            </div>
+            <div class="pipeline-step step-4">
+              <div class="step-marker">4</div>
+              <div class="step-line"></div>
+              <div class="step-content">
+                <h4>Execute YouTube Reviews</h4>
+                <p>Fan out review requests for discovered products with bounded concurrency. The agent fetches transcripts and builds sentiment-backed review summaries.</p>
+              </div>
+            </div>
+            <div class="pipeline-step step-5">
+              <div class="step-marker">5</div>
+              <div class="step-content">
+                <h4>Synthesize</h4>
+                <p>GPT-4o-mini merges product signals and review evidence into a ranked response, including the explicit source links returned by the agents.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pipeline-section">
+          <h2>Design Decisions</h2>
+          <div class="feature-grid">
+            <div class="feature-card">
+              <h4><span class="feature-icon">R</span> Deterministic Routing</h4>
+              <p>No LLM is used for routing. Keyword-based matching keeps latency low and behavior predictable across runs.</p>
+            </div>
+            <div class="feature-card">
+              <h4><span class="feature-icon">U</span> URL Grounding</h4>
+              <p>Every product link in the final response traces back to agent-retrieved evidence before it is surfaced to the user.</p>
+            </div>
+            <div class="feature-card">
+              <h4><span class="feature-icon">T</span> Testable Graph</h4>
+              <p><code>run_query()</code> accepts injected clients, which keeps orchestration testable without live downstream services.</p>
+            </div>
+            <div class="feature-card">
+              <h4><span class="feature-icon">P</span> Bounded Parallelism</h4>
+              <p>YouTube review fan-out is capped to avoid overwhelming the downstream agent while still keeping multi-product queries responsive.</p>
+            </div>
+            <div class="feature-card">
+              <h4><span class="feature-icon">G</span> Graceful Degradation</h4>
+              <p>If one agent is unreachable, the system returns partial results with notes instead of collapsing the full request.</p>
+            </div>
+            <div class="feature-card">
+              <h4><span class="feature-icon">S</span> Structured Output</h4>
+              <p>Pydantic models and JSON schemas validate the final recommendation payload before it is rendered to the user.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="pipeline-section">
+          <h2>Protocol Stack</h2>
+          <div class="protocol-grid">
+            <div class="protocol-card">
+              <h4>A2A v0.3</h4>
+              <p>Agent-to-agent protocol with Agent Card discovery, JSON-RPC 2.0 transport, and task lifecycle support through <code>SendMessage</code> and <code>GetTask</code>.</p>
+            </div>
+            <div class="protocol-card">
+              <h4>MCP</h4>
+              <p>Product Discovery is also exposed as an MCP tool over stdio with initialize handshake support and Content-Length framing.</p>
+            </div>
+            <div class="protocol-card">
+              <h4>LangGraph</h4>
+              <p>StateGraph orchestration coordinates discovery, routing, product search, review fan-out, and synthesis in a deterministic flow.</p>
+            </div>
+            <div class="protocol-card">
+              <h4>JSON-RPC 2.0</h4>
+              <p>The shared transport layer validates the <code>jsonrpc</code> field strictly and returns protocol-correct errors for malformed envelopes.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const state = {
+        page: "query",
+        loading: false,
+        elapsed: 0,
+        result: null,
+        error: "",
+        systemStatus: "loading",
+        systemLabel: "Checking system",
+      };
+
+      const hints = [
+        "best wireless earbuds under 100",
+        "noise cancelling headphones vs AirPods",
+        "budget mechanical keyboard for gaming",
+        "top rated laptop for students 2025",
+      ];
+
+      const loadingSteps = [
+        { label: "Discovering agents", t: 0 },
+        { label: "Routing query", t: 1 },
+        { label: "Searching products", t: 2 },
+        { label: "Fetching YouTube reviews", t: 5 },
+        { label: "Synthesizing recommendations", t: 15 },
+      ];
+
+      let timerId = null;
+      let statusIntervalId = null;
+
+      const elements = {
+        queryInput: document.getElementById("query-input"),
+        searchButton: document.getElementById("search-button"),
+        searchHints: document.getElementById("search-hints"),
+        loadingContainer: document.getElementById("loading-container"),
+        loadingSteps: document.getElementById("loading-steps"),
+        errorBox: document.getElementById("error-box"),
+        partialBanner: document.getElementById("partial-banner"),
+        resultsContainer: document.getElementById("results-container"),
+        resultsMeta: document.getElementById("results-meta"),
+        recommendationsList: document.getElementById("recommendations-list"),
+        sourcesSection: document.getElementById("sources-section"),
+        sourcesTitle: document.getElementById("sources-title"),
+        sourcesGrid: document.getElementById("sources-grid"),
+        emptyState: document.getElementById("empty-state"),
+        queryPage: document.getElementById("query-page"),
+        featuresPage: document.getElementById("features-page"),
+        statusDot: document.getElementById("status-dot"),
+        statusLabel: document.getElementById("status-label"),
+        navTabs: Array.from(document.querySelectorAll(".nav-tab")),
+      };
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function safeUrl(value) {
+        try {
+          const url = new URL(value, window.location.origin);
+          if (url.protocol === "http:" || url.protocol === "https:") {
+            return url.href;
+          }
+        } catch (error) {
+          return "#";
+        }
+
+        return "#";
+      }
+
+      function formatPercent(value) {
+        return typeof value === "number" && Number.isFinite(value)
+          ? `${Math.round(value * 100)}`
+          : "N/A";
+      }
+
+      function formatConfidence(value) {
+        return typeof value === "number" && Number.isFinite(value)
+          ? `${Math.round(value * 100)}% confidence`
+          : "confidence unavailable";
+      }
+
+      function sentimentClass(sentiment) {
+        if (sentiment === "positive" || sentiment === "mixed" || sentiment === "negative") {
+          return `sentiment-${sentiment}`;
+        }
+        return "sentiment-unknown";
+      }
+
+      function renderHints() {
+        elements.searchHints.innerHTML = hints
+          .map(
+            (hint) =>
+              `<button type="button" class="hint-chip" data-query="${escapeHtml(hint)}">${escapeHtml(hint)}</button>`
+          )
+          .join("");
+
+        elements.searchHints.querySelectorAll(".hint-chip").forEach((button) => {
+          button.addEventListener("click", () => {
+            const value = button.getAttribute("data-query") || "";
+            elements.queryInput.value = value;
+            void runSearch(value);
+          });
+        });
+      }
+
+      function renderLoadingSteps() {
+        elements.loadingSteps.innerHTML = loadingSteps
+          .map((step, index) => {
+            const nextThreshold = loadingSteps[index + 1] ? loadingSteps[index + 1].t : Number.POSITIVE_INFINITY;
+            const className = state.elapsed >= nextThreshold ? "done" : state.elapsed >= step.t ? "active" : "";
+            const marker = className === "done" ? "&#10003;" : "&#9675;";
+            return `<div class="loading-step ${className}">${marker} ${escapeHtml(step.label)}</div>`;
+          })
+          .join("");
+      }
+
+      function renderStatus() {
+        elements.statusDot.className = `status-dot ${state.systemStatus}`;
+
+        let color = "var(--yellow)";
+        if (state.systemStatus === "ok") {
+          color = "var(--green)";
+        } else if (state.systemStatus === "warn") {
+          color = "var(--yellow)";
+        } else if (state.systemStatus === "err") {
+          color = "var(--red)";
+        }
+
+        elements.statusLabel.textContent = state.systemLabel;
+        elements.statusLabel.style.color = color;
+      }
+
+      function renderRecommendations(recommendations) {
+        if (!Array.isArray(recommendations) || recommendations.length === 0) {
+          elements.recommendationsList.innerHTML = `
+            <div class="empty-card">
+              No ranked products were returned for this query.
+            </div>
+          `;
+          return;
+        }
+
+        elements.recommendationsList.innerHTML = recommendations
+          .map((rec, index) => {
+            const rankClass = index === 0 ? "gold" : index === 1 ? "silver" : index === 2 ? "bronze" : "";
+            const pros = Array.isArray(rec.pros) ? rec.pros : [];
+            const cons = Array.isArray(rec.cons) ? rec.cons : [];
+            const prosHtml = pros
+              .map((item) => `<div class="pc-item"><span class="dot"></span>${escapeHtml(item)}</div>`)
+              .join("");
+            const consHtml = cons
+              .map((item) => `<div class="pc-item"><span class="dot"></span>${escapeHtml(item)}</div>`)
+              .join("");
+            const prosConsHtml = pros.length || cons.length
+              ? `
+                <div class="rec-pros-cons">
+                  <div class="pc-col pros">
+                    <h4>Pros</h4>
+                    ${prosHtml || '<div class="pc-item"><span class="dot"></span>No pros captured</div>'}
+                  </div>
+                  <div class="pc-col cons">
+                    <h4>Cons</h4>
+                    ${consHtml || '<div class="pc-item"><span class="dot"></span>No cons captured</div>'}
+                  </div>
+                </div>
+              `
+              : "";
+
+            const score = formatPercent(rec.score);
+            const confidence = formatConfidence(rec.confidence);
+
+            return `
+              <div class="rec-card">
+                <div class="rec-top">
+                  <div class="rec-rank ${rankClass}">${escapeHtml(rec.rank ?? index + 1)}</div>
+                  <div class="rec-info">
+                    <div class="rec-name">${escapeHtml(rec.product_name || "Unnamed product")}</div>
+                    <div class="rec-meta">
+                      ${rec.price ? `<span class="rec-meta-item">${escapeHtml(rec.price)}</span>` : ""}
+                      ${rec.rating ? `<span class="rec-meta-item">${escapeHtml(rec.rating)}</span>` : ""}
+                      <span class="sentiment-badge ${sentimentClass(rec.sentiment)}">${escapeHtml(rec.sentiment || "unknown")}</span>
+                    </div>
+                  </div>
+                  <div class="rec-score-wrap">
+                    <div class="rec-score">${escapeHtml(score)}</div>
+                    <div class="rec-confidence">${escapeHtml(confidence)}</div>
+                  </div>
+                </div>
+                <div class="rec-rationale">${escapeHtml(rec.rationale || "No rationale provided.")}</div>
+                ${prosConsHtml}
+              </div>
+            `;
+          })
+          .join("");
+      }
+
+      function renderSources(sources) {
+        if (!Array.isArray(sources) || sources.length === 0) {
+          elements.sourcesSection.classList.add("hidden");
+          elements.sourcesGrid.innerHTML = "";
+          return;
+        }
+
+        elements.sourcesTitle.textContent = `Sources (${sources.length})`;
+        elements.sourcesGrid.innerHTML = sources
+          .map((source) => {
+            const type = source.type === "video" ? "video" : "product";
+            const label = type === "product" ? "P" : "V";
+
+            return `
+              <a href="${escapeHtml(safeUrl(source.url))}" target="_blank" rel="noopener noreferrer" class="source-link">
+                <div class="source-icon ${type}">${label}</div>
+                <div style="overflow: hidden;">
+                  <div class="source-title">${escapeHtml(source.title || source.url || "Untitled source")}</div>
+                  <div class="source-agent">${escapeHtml(source.agent || "unknown agent")}</div>
+                </div>
+                <div style="margin-left: auto; flex-shrink: 0;" aria-hidden="true">&#8599;</div>
+              </a>
+            `;
+          })
+          .join("");
+
+        elements.sourcesSection.classList.remove("hidden");
+      }
+
+      function renderPageState() {
+        const showResults = Boolean(state.result);
+        const showEmpty = !state.loading && !state.error && !showResults;
+
+        elements.queryPage.classList.toggle("hidden", state.page !== "query");
+        elements.featuresPage.classList.toggle("hidden", state.page !== "features");
+
+        elements.navTabs.forEach((tab) => {
+          tab.classList.toggle("active", tab.dataset.page === state.page);
+        });
+
+        elements.loadingContainer.classList.toggle("hidden", !state.loading);
+        elements.resultsContainer.classList.toggle("hidden", !showResults);
+        elements.emptyState.classList.toggle("hidden", !showEmpty);
+
+        if (state.error) {
+          elements.errorBox.textContent = state.error;
+          elements.errorBox.classList.remove("hidden");
+        } else {
+          elements.errorBox.classList.add("hidden");
+          elements.errorBox.textContent = "";
+        }
+
+        if (showResults && state.result.partial && state.result.notes) {
+          elements.partialBanner.textContent = state.result.notes;
+          elements.partialBanner.classList.remove("hidden");
+        } else {
+          elements.partialBanner.classList.add("hidden");
+          elements.partialBanner.textContent = "";
+        }
+
+        elements.searchButton.disabled = state.loading || !elements.queryInput.value.trim();
+        elements.searchButton.textContent = state.loading ? "Searching..." : "Search";
+        elements.queryInput.disabled = state.loading;
+
+        if (showResults) {
+          const recommendations = Array.isArray(state.result.recommendations) ? state.result.recommendations : [];
+          const sources = Array.isArray(state.result.sources) ? state.result.sources : [];
+          elements.resultsMeta.textContent = `${recommendations.length} products | ${sources.length} sources`;
+          renderRecommendations(recommendations);
+          renderSources(sources);
+        } else {
+          elements.resultsMeta.textContent = "";
+          elements.recommendationsList.innerHTML = "";
+          elements.sourcesGrid.innerHTML = "";
+          elements.sourcesSection.classList.add("hidden");
+        }
+
+        renderLoadingSteps();
+        renderStatus();
+      }
+
+      async function refreshSystemStatus() {
+        try {
+          const response = await fetch("/status", { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`Status request failed with ${response.status}`);
+          }
+
+          const payload = await response.json();
+          if (payload.status === "ok") {
+            state.systemStatus = "ok";
+            state.systemLabel = `Ready (${payload.available_agents}/${payload.total_agents})`;
+          } else if (payload.status === "degraded") {
+            state.systemStatus = "warn";
+            state.systemLabel = `Degraded (${payload.available_agents}/${payload.total_agents})`;
+          } else {
+            state.systemStatus = "err";
+            state.systemLabel = "Agents unavailable";
+          }
+        } catch (error) {
+          state.systemStatus = "err";
+          state.systemLabel = "Disconnected";
+        }
+
+        renderStatus();
+      }
+
+      function clearLoadingTimer() {
+        if (timerId !== null) {
+          window.clearInterval(timerId);
+          timerId = null;
+        }
+      }
+
+      async function runSearch(queryOverride) {
+        const submittedQuery = (queryOverride || elements.queryInput.value).trim();
+        if (!submittedQuery) {
+          return;
+        }
+
+        elements.queryInput.value = submittedQuery;
+        state.loading = true;
+        state.elapsed = 0;
+        state.result = null;
+        state.error = "";
+        renderPageState();
+
+        timerId = window.setInterval(() => {
+          state.elapsed += 1;
+          renderLoadingSteps();
+        }, 1000);
+
+        try {
+          const response = await fetch("/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: submittedQuery }),
+          });
+
+          if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`Server error ${response.status}: ${detail}`);
+          }
+
+          state.result = await response.json();
+        } catch (error) {
+          state.error = error instanceof Error ? error.message : "Unexpected frontend error";
+        } finally {
+          clearLoadingTimer();
+          state.loading = false;
+          renderPageState();
+          void refreshSystemStatus();
+        }
+      }
+
+      function bindEvents() {
+        elements.searchButton.addEventListener("click", () => {
+          void runSearch();
+        });
+
+        elements.queryInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void runSearch();
+          }
+        });
+
+        elements.queryInput.addEventListener("input", () => {
+          elements.searchButton.disabled = state.loading || !elements.queryInput.value.trim();
+        });
+
+        elements.navTabs.forEach((tab) => {
+          tab.addEventListener("click", () => {
+            state.page = tab.dataset.page || "query";
+            renderPageState();
+          });
+        });
+      }
+
+      function init() {
+        renderHints();
+        bindEvents();
+        renderPageState();
+        void refreshSystemStatus();
+        statusIntervalId = window.setInterval(refreshSystemStatus, 10000);
+      }
+
+      window.addEventListener("beforeunload", () => {
+        clearLoadingTimer();
+        if (statusIntervalId !== null) {
+          window.clearInterval(statusIntervalId);
+        }
+      });
+
+      init();
+    })();
+  </script>
+</body>
+</html>
