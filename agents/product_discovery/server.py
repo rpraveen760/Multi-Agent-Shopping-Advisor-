@@ -6,6 +6,7 @@ that the MCP server exposes. One source of truth, two access methods.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import FastAPI
@@ -81,26 +82,71 @@ async def handle_send_message(
 
     logger.info("Received product search for: %s", query)
     settings = get_settings()
-    task_store.update_status(
-        task.id,
-        "working",
-        make_agent_message(f"Searching for products matching: {query}"),
+    debug_snapshot = {
+        "query": query,
+        "search_query": "",
+        "stage": "accepted",
+        "candidates": [],
+        "enriched_candidates": [],
+        "normalized_products": [],
+        "summary": "",
+    }
+
+    async def publish_debug(stage: str, message: str, payload: dict) -> None:
+        debug_snapshot.update(payload)
+        debug_snapshot["stage"] = stage
+        task_store.update_status(
+            task.id,
+            "working",
+            make_agent_message(message),
+        )
+        task_store.set_artifacts(
+            task.id,
+            [
+                make_artifact(
+                    name="product-discovery-debug",
+                    text=json.dumps(debug_snapshot, indent=2),
+                    metadata={"schema": "ProductDiscoveryTrace", "stage": stage},
+                )
+            ],
+        )
+
+    await publish_debug(
+        "accepted",
+        f"Searching for products matching: {query}",
+        debug_snapshot,
     )
 
     try:
-        result = await search_products(query=query, settings=settings)
-
-        artifact = make_artifact(
+        try:
+            result = await search_products(
+                query=query,
+                settings=settings,
+                on_step=publish_debug,
+            )
+        except TypeError as exc:
+            if "on_step" not in str(exc):
+                raise
+            result = await search_products(
+                query=query,
+                settings=settings,
+            )
+        result_artifact = make_artifact(
             name="product-discovery-result",
             text=result.model_dump_json(indent=2),
             metadata={"schema": "ProductDiscoveryResult"},
+        )
+        debug_artifact = make_artifact(
+            name="product-discovery-debug",
+            text=json.dumps(debug_snapshot, indent=2),
+            metadata={"schema": "ProductDiscoveryTrace", "stage": "completed"},
         )
 
         task.status = TaskStatus(
             state="completed",
             message=make_agent_message(f"Product search results for: {query}"),
         )
-        task.artifacts = [artifact]
+        task.artifacts = [result_artifact, debug_artifact]
 
     except Exception as exc:
         logger.exception("Product discovery failed for: %s", query)

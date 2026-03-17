@@ -16,12 +16,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 from langgraph.graph import END, StateGraph
 from openai import AsyncOpenAI
 
 from agents.orchestrator.routing import RoutingDecision, route_query
+from agents.orchestrator.trace import TraceRecorder
 from common.a2a_client import A2AClient, A2AError
 from common.a2a_models import (
     AgentCard,
@@ -55,6 +56,7 @@ class OrchestratorState(TypedDict, total=False):
     # Dependency injection (optional overrides)
     a2a_client: A2AClient | None
     llm_client: AsyncOpenAI | None
+    trace_recorder: TraceRecorder | None
 
     # Discovery
     discovered_agents: dict[str, AgentCard]
@@ -82,10 +84,18 @@ async def discover_agents(state: OrchestratorState) -> dict[str, Any]:
     """Fetch Agent Cards from configured discovery URLs."""
     settings = state["settings"]
     client = state.get("a2a_client") or A2AClient()
+    trace = state.get("trace_recorder")
     errors: list[str] = list(state.get("errors", []))
 
     discovered: dict[str, AgentCard] = {}
     card_urls: dict[str, str] = {}
+
+    if trace:
+        trace.add_event(
+            "Discovering agents",
+            status="active",
+            detail="Fetching seeded Agent Cards for downstream services.",
+        )
 
     # Map of agent name -> card URL from settings
     agent_endpoints = {
@@ -99,10 +109,28 @@ async def discover_agents(state: OrchestratorState) -> dict[str, Any]:
             discovered[name] = card
             card_urls[name] = card_url
             logger.info("Discovered agent: %s at %s", card.name, card.url)
+            if trace:
+                trace.add_event(
+                    f"Discovered {card.name}",
+                    status="done",
+                    detail=card.url,
+                    agent=name,
+                )
         except Exception as exc:
             msg = f"Failed to discover {name} at {card_url}: {exc}"
             logger.warning(msg)
             errors.append(msg)
+            if trace:
+                trace.append_error(msg)
+                trace.add_event(
+                    f"Failed to discover {name}",
+                    status="error",
+                    detail=str(exc),
+                    agent=name,
+                )
+
+    if trace:
+        trace.set_discovered_agents(discovered, card_urls)
 
     return {
         "discovered_agents": discovered,
@@ -121,8 +149,28 @@ async def route_tasks(state: OrchestratorState) -> dict[str, Any]:
     query = state["query"]
     discovered = state.get("discovered_agents", {})
     card_urls = state.get("card_urls", {})
+    trace = state.get("trace_recorder")
+
+    if trace:
+        trace.add_event(
+            "Routing query",
+            status="active",
+            detail="Resolving which agents should execute this request.",
+        )
 
     decision = route_query(query, discovered, card_urls)
+
+    if trace:
+        trace.set_routing(decision)
+        trace.add_event(
+            "Routing complete",
+            status="done",
+            detail=f"Resolved {len(decision.routes)} downstream routes.",
+            data={
+                "needs_product_discovery": decision.needs_product_discovery,
+                "needs_youtube_reviews": decision.needs_youtube_reviews,
+            },
+        )
 
     return {"routing_decision": decision}
 
@@ -134,6 +182,7 @@ async def route_tasks(state: OrchestratorState) -> dict[str, Any]:
 async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
     """Call the Product Discovery agent via A2A SendMessage."""
     decision = state.get("routing_decision")
+    trace = state.get("trace_recorder")
     errors: list[str] = list(state.get("errors", []))
 
     if not decision or not decision.needs_product_discovery:
@@ -151,12 +200,27 @@ async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
 
     try:
         logger.info("Calling Product Discovery agent: %s", route.agent_url)
+        if trace:
+            trace.add_event(
+                "Calling Product Discovery agent",
+                status="active",
+                detail=route.agent_url,
+                agent="product-discovery",
+                data={"query_text": route.query_text},
+            )
         result = await client.send_message(route.agent_url, route.query_text)
         result = await _resolve_send_message_result(
             result=result,
             client=client,
             agent_url=route.agent_url,
             settings=state["settings"],
+            task_observer=(
+                lambda task: _record_agent_task_snapshot(
+                    trace,
+                    agent_name="product-discovery",
+                    task=task,
+                )
+            ) if trace else None,
         )
 
         # Parse the result — it should be a Task with an artifact
@@ -167,17 +231,40 @@ async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
                     "Product Discovery returned %d products",
                     len(product_result.products),
                 )
+                if trace:
+                    trace.add_event(
+                        "Product discovery completed",
+                        status="done",
+                        detail=f"Returned {len(product_result.products)} normalized products.",
+                        agent="product-discovery",
+                    )
                 return {"product_result": product_result, "errors": errors}
 
         msg = "Product Discovery agent returned no parseable product data"
         logger.warning(msg)
         errors.append(msg)
+        if trace:
+            trace.append_error(msg)
+            trace.add_event(
+                "Product discovery returned no parseable data",
+                status="error",
+                detail=msg,
+                agent="product-discovery",
+            )
         return {"product_result": None, "errors": errors}
 
     except (A2AError, Exception) as exc:
         msg = f"Product Discovery agent failed: {exc}"
         logger.error(msg)
         errors.append(msg)
+        if trace:
+            trace.append_error(msg)
+            trace.add_event(
+                "Product discovery failed",
+                status="error",
+                detail=str(exc),
+                agent="product-discovery",
+            )
         return {"product_result": None, "errors": errors}
 
 
@@ -190,16 +277,19 @@ def _extract_product_result(task: Task) -> ProductDiscoveryResult | None:
     if not task.artifacts:
         return None
 
-    for artifact in task.artifacts:
-        for part in artifact.parts:
-            try:
-                data = json.loads(part.text)
-                return ProductDiscoveryResult(**data)
-            except (json.JSONDecodeError, Exception) as exc:
-                logger.debug("Failed to parse artifact as ProductDiscoveryResult: %s", exc)
-                continue
+    data = _extract_named_artifact_json(task, "product-discovery-result")
+    if data is None:
+        return None
 
-    return None
+    try:
+        return ProductDiscoveryResult(**data)
+    except Exception as exc:
+        logger.debug("Failed to parse product result artifact: %s", exc)
+        return None
+
+
+def _extract_product_trace(task: Task) -> dict[str, Any] | None:
+    return _extract_named_artifact_json(task, "product-discovery-debug")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -214,6 +304,7 @@ async def execute_youtube_reviews(state: OrchestratorState) -> dict[str, Any]:
     """
     decision = state.get("routing_decision")
     product_result = state.get("product_result")
+    trace = state.get("trace_recorder")
     errors: list[str] = list(state.get("errors", []))
     settings = state["settings"]
 
@@ -246,17 +337,41 @@ async def execute_youtube_reviews(state: OrchestratorState) -> dict[str, Any]:
         async with semaphore:
             try:
                 logger.info("Requesting YouTube review for: %s", product_name)
+                if trace:
+                    trace.add_event(
+                        f"Calling YouTube Review agent for {product_name}",
+                        status="active",
+                        detail=route.agent_url,
+                        agent="youtube-review",
+                        data={"product_name": product_name},
+                    )
                 result = await client.send_message(route.agent_url, product_name)
                 result = await _resolve_send_message_result(
                     result=result,
                     client=client,
                     agent_url=route.agent_url,
                     settings=settings,
+                    task_observer=(
+                        lambda task: _record_agent_task_snapshot(
+                            trace,
+                            agent_name="youtube-review",
+                            task=task,
+                            product_name=product_name,
+                        )
+                    ) if trace else None,
                 )
 
                 if isinstance(result, Task):
                     summary = _extract_review_summary(result)
                     if summary:
+                        if trace:
+                            trace.add_event(
+                                f"YouTube review completed for {product_name}",
+                                status="done",
+                                detail=f"Captured {len(summary.sources)} ranked videos.",
+                                agent="youtube-review",
+                                data={"product_name": product_name},
+                            )
                         return (product_name, summary, None)
 
                 return (product_name, None, f"No parseable review data for {product_name}")
@@ -276,6 +391,15 @@ async def execute_youtube_reviews(state: OrchestratorState) -> dict[str, Any]:
             review_results[name] = summary
         if error:
             errors.append(error)
+            if trace:
+                trace.append_error(error)
+                trace.add_event(
+                    f"YouTube review issue for {name}",
+                    status="error",
+                    detail=error,
+                    agent="youtube-review",
+                    data={"product_name": name},
+                )
 
     logger.info("YouTube reviews completed: %d/%d successful", len(review_results), len(product_names))
 
@@ -291,16 +415,19 @@ def _extract_review_summary(task: Task) -> ReviewSummary | None:
     if not task.artifacts:
         return None
 
-    for artifact in task.artifacts:
-        for part in artifact.parts:
-            try:
-                data = json.loads(part.text)
-                return ReviewSummary(**data)
-            except (json.JSONDecodeError, Exception) as exc:
-                logger.debug("Failed to parse artifact as ReviewSummary: %s", exc)
-                continue
+    data = _extract_named_artifact_json(task, "review-summary")
+    if data is None:
+        return None
 
-    return None
+    try:
+        return ReviewSummary(**data)
+    except Exception as exc:
+        logger.debug("Failed to parse review summary artifact: %s", exc)
+        return None
+
+
+def _extract_review_trace(task: Task) -> dict[str, Any] | None:
+    return _extract_named_artifact_json(task, "review-debug")
 
 
 async def _resolve_send_message_result(
@@ -308,6 +435,7 @@ async def _resolve_send_message_result(
     client: A2AClient,
     agent_url: str,
     settings: Settings,
+    task_observer: Callable[[Task], None] | None = None,
 ) -> Task | Message:
     """Poll non-terminal A2A tasks until they reach a terminal state."""
     if not isinstance(result, Task):
@@ -315,6 +443,10 @@ async def _resolve_send_message_result(
 
     task = result
     deadline = asyncio.get_running_loop().time() + settings.A2A_CLIENT_TIMEOUT_SECONDS
+    last_signature = _task_signature(task)
+
+    if task_observer:
+        task_observer(task)
 
     while task.status.state not in _TERMINAL_TASK_STATES:
         now = asyncio.get_running_loop().time()
@@ -326,8 +458,108 @@ async def _resolve_send_message_result(
 
         await asyncio.sleep(min(_TASK_POLL_INTERVAL_SECONDS, deadline - now))
         task = await client.get_task(agent_url, task.id)
+        signature = _task_signature(task)
+        if task_observer and signature != last_signature:
+            task_observer(task)
+        last_signature = signature
 
     return task
+
+
+def _extract_named_artifact_json(task: Task, artifact_name: str) -> dict[str, Any] | None:
+    """Extract JSON content from a named task artifact."""
+    if not task.artifacts:
+        return None
+
+    for artifact in task.artifacts:
+        if artifact.name != artifact_name:
+            continue
+        for part in artifact.parts:
+            try:
+                return json.loads(part.text)
+            except json.JSONDecodeError as exc:
+                logger.debug("Failed to parse %s artifact as JSON: %s", artifact_name, exc)
+                return None
+
+    return None
+
+
+def _task_status_text(task: Task) -> str | None:
+    """Extract a flat status message from a task."""
+    message = task.status.message
+    if message is None:
+        return None
+
+    parts = [part.text.strip() for part in message.parts if part.type == "text" and part.text.strip()]
+    if not parts:
+        return None
+
+    return " ".join(parts)
+
+
+def _task_signature(task: Task) -> tuple[str, str, str]:
+    """Build a compact signature so trace observers only react to real changes."""
+    debug_payload = _extract_product_trace(task) or _extract_review_trace(task) or {}
+    debug_json = json.dumps(debug_payload, sort_keys=True) if debug_payload else ""
+    return (
+        task.status.state,
+        _task_status_text(task) or "",
+        debug_json,
+    )
+
+
+def _map_task_state_to_event_status(task_state: str) -> str:
+    if task_state == "completed":
+        return "done"
+    if task_state == "failed":
+        return "error"
+    if task_state in {"working", "submitted"}:
+        return "active"
+    return "info"
+
+
+def _record_agent_task_snapshot(
+    trace: TraceRecorder | None,
+    *,
+    agent_name: str,
+    task: Task,
+    product_name: str | None = None,
+) -> None:
+    """Record in-flight A2A task updates into the live trace store."""
+    if trace is None:
+        return
+
+    message = _task_status_text(task)
+    if message:
+        title = "Product Discovery task update"
+        if agent_name == "youtube-review":
+            label = product_name or "review target"
+            title = f"YouTube review update for {label}"
+
+        trace.add_event(
+            title,
+            status=_map_task_state_to_event_status(task.status.state),
+            detail=message,
+            agent=agent_name,
+            data={
+                "task_id": task.id,
+                "task_state": task.status.state,
+                "product_name": product_name,
+            },
+        )
+
+    if agent_name == "product-discovery":
+        payload = _extract_product_trace(task)
+        if payload:
+            trace.set_product_trace(payload)
+        return
+
+    payload = _extract_review_trace(task)
+    if payload:
+        trace.set_review_trace(
+            payload.get("product_name") or product_name or "unknown",
+            payload,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -396,6 +628,7 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
     product_result = state.get("product_result")
     review_results = state.get("review_results", {})
     decision = state.get("routing_decision")
+    trace = state.get("trace_recorder")
     errors: list[str] = list(state.get("errors", []))
 
     # Determine if we have partial data
@@ -406,6 +639,26 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
     missing_requested_products = requested_products and not has_products
     missing_requested_reviews = requested_reviews and not has_reviews
 
+    if trace:
+        trace.add_event(
+            "Synthesizing unified response",
+            status="active",
+            detail="Merging product discovery and YouTube review evidence.",
+            data={
+                "product_count": len(product_result.products) if product_result else 0,
+                "review_count": len(review_results),
+            },
+        )
+        trace.set_synthesis(
+            {
+                "status": "running",
+                "product_count": len(product_result.products) if product_result else 0,
+                "review_count": len(review_results),
+                "requested_products": requested_products,
+                "requested_reviews": requested_reviews,
+            }
+        )
+
     if not has_products and not has_reviews:
         # Nothing to synthesize
         unified = UnifiedResponse(
@@ -415,6 +668,22 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
             partial=True,
             notes="No data was available from any agent. " + "; ".join(errors) if errors else "No data was available from any agent.",
         )
+        if trace:
+            trace.set_synthesis(
+                {
+                    "status": "completed",
+                    "product_count": 0,
+                    "review_count": 0,
+                    "partial": True,
+                    "notes": unified.notes,
+                }
+            )
+            trace.set_final_response(unified)
+            trace.add_event(
+                "Unified response ready",
+                status="done",
+                detail=unified.notes,
+            )
         return {"unified_response": unified, "errors": errors}
 
     # If we only have products (no reviews), or if we have both, use LLM synthesis
@@ -509,6 +778,25 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
             notes=notes,
         )
 
+        if trace:
+            trace.set_synthesis(
+                {
+                    "status": "completed",
+                    "product_count": len(product_result.products) if product_result else 0,
+                    "review_count": len(review_results),
+                    "partial": partial,
+                    "notes": notes,
+                    "recommendation_count": len(recommendations),
+                    "source_count": len(sources),
+                }
+            )
+            trace.set_final_response(unified)
+            trace.add_event(
+                "Unified response ready",
+                status="done",
+                detail=f"Built {len(recommendations)} ranked recommendations.",
+            )
+
         logger.info(
             "Synthesis complete: %d recommendations, %d sources",
             len(recommendations),
@@ -521,9 +809,29 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
         msg = f"Synthesis LLM call failed: {exc}"
         logger.error(msg)
         errors.append(msg)
+        if trace:
+            trace.append_error(msg)
+            trace.add_event(
+                "Synthesis failed, using fallback",
+                status="error",
+                detail=str(exc),
+            )
 
         # Fallback: build a basic response from raw product data
         unified = _fallback_synthesis(query, product_result, review_results, errors)
+        if trace:
+            trace.set_synthesis(
+                {
+                    "status": "fallback",
+                    "product_count": len(product_result.products) if product_result else 0,
+                    "review_count": len(review_results),
+                    "partial": True,
+                    "notes": unified.notes,
+                    "recommendation_count": len(unified.recommendations),
+                    "source_count": len(unified.sources),
+                }
+            )
+            trace.set_final_response(unified)
         return {"unified_response": unified, "errors": errors}
 
 
@@ -706,6 +1014,7 @@ async def run_query(
     settings: Settings | None = None,
     a2a_client: A2AClient | None = None,
     llm_client: AsyncOpenAI | None = None,
+    trace_recorder: TraceRecorder | None = None,
 ) -> UnifiedResponse:
     """Execute the full orchestrator pipeline for a user query.
 
@@ -733,6 +1042,7 @@ async def run_query(
             "settings": settings,
             "a2a_client": runtime_a2a_client,
             "llm_client": runtime_llm_client,
+            "trace_recorder": trace_recorder,
             "discovered_agents": {},
             "card_urls": {},
             "routing_decision": RoutingDecision(query=user_query),
@@ -756,6 +1066,9 @@ async def run_query(
                 partial=True,
                 notes="Orchestrator pipeline produced no response.",
             )
+
+        if trace_recorder:
+            trace_recorder.set_final_response(response)
 
         return response
     finally:

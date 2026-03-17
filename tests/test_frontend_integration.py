@@ -28,19 +28,27 @@ class FrontendIntegrationTests(unittest.TestCase):
     def test_root_and_frontend_mount_serve_ui(self):
         root_response = self.client.get("/")
         mounted_response = self.client.get("/frontend/index.html")
+        trace_response = self.client.get("/trace")
 
         self.assertEqual(root_response.status_code, 200)
         self.assertEqual(mounted_response.status_code, 200)
+        self.assertEqual(trace_response.status_code, 200)
         self.assertIn("Federated Multi-Agent System", root_response.text)
+        self.assertIn("Live Trace", trace_response.text)
 
     def test_frontend_is_self_contained_and_same_origin(self):
         response = self.client.get("/")
+        trace_response = self.client.get("/trace")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(trace_response.status_code, 200)
         self.assertNotIn("cdnjs", response.text)
+        self.assertNotIn("cdnjs", trace_response.text)
         self.assertNotIn("http://localhost:8000", response.text)
+        self.assertNotIn("http://localhost:8000", trace_response.text)
         self.assertIn('fetch("/query"', response.text)
         self.assertIn('fetch("/status"', response.text)
+        self.assertIn('fetch("/query/trace"', trace_response.text)
 
     def test_status_endpoint_reports_degraded_when_agent_is_unavailable(self):
         settings = SimpleNamespace(

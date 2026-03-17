@@ -54,11 +54,13 @@ from agents.orchestrator import graph as orchestrator_graph
 from agents.orchestrator.routing import route_query
 from common.a2a_models import AgentCard
 from common.a2a_models import (
+    Artifact,
     Product,
     ProductDiscoveryResult,
     ReviewSummary,
     Task,
     TaskStatus,
+    TextPart,
     UnifiedResponse,
     VideoSource,
     make_agent_message,
@@ -173,6 +175,27 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
                 "https://youtube.com/watch?v=abc123",
             ],
         )
+
+    def test_extract_named_debug_artifacts(self):
+        task = Task(
+            status=TaskStatus(state="working", message=make_agent_message("working")),
+            artifacts=[
+                Artifact(
+                    name="product-discovery-debug",
+                    parts=[TextPart(text='{"stage":"enrichment-complete","candidates":[{"url":"https://example.com"}]}')],
+                ),
+                Artifact(
+                    name="review-debug",
+                    parts=[TextPart(text='{"product_name":"Sony WF-1000XM5","stage":"summary-complete"}')],
+                ),
+            ],
+        )
+
+        product_trace = orchestrator_graph._extract_product_trace(task)
+        review_trace = orchestrator_graph._extract_review_trace(task)
+
+        self.assertEqual(product_trace["stage"], "enrichment-complete")
+        self.assertEqual(review_trace["product_name"], "Sony WF-1000XM5")
 
     def test_fallback_synthesis_supports_review_only_results(self):
         review_results = {

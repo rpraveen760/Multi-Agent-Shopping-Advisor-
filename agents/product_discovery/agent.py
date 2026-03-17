@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import re
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -25,6 +26,8 @@ from common.a2a_models import Product, ProductDiscoveryResult
 from common.config import Settings
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, str, dict[str, Any]], Awaitable[None] | None]
 
 # ── Constants ─────────────────────────────────────────────────────
 
@@ -84,12 +87,70 @@ Your task:
 7. Write a short summary (1-2 sentences) of what was found."""
 
 
+async def _emit_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    message: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Publish a progress snapshot if a callback was provided."""
+    if callback is None:
+        return
+
+    result = callback(stage, message, json.loads(json.dumps(snapshot)))
+    if asyncio.iscoroutine(result):
+        await result
+
+
+async def _close_async_client(client: Any) -> None:
+    """Best-effort close for SDK clients used in async helpers."""
+    close_method = getattr(client, "close", None) or getattr(client, "aclose", None)
+    if close_method is None:
+        return
+
+    result = close_method()
+    if asyncio.iscoroutine(result):
+        await result
+
+
+def _build_search_query(query: str) -> str:
+    return f"{query} buy price review rating"
+
+
+def _candidate_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Trim raw candidate data for trace/debug views."""
+    return {
+        "title": candidate.get("title", ""),
+        "snippet": candidate.get("snippet", "")[:240],
+        "url": candidate.get("url", ""),
+        "merchant": candidate.get("merchant") or _extract_domain(candidate.get("url", "")),
+        "enriched_title": candidate.get("enriched_title", ""),
+        "price": candidate.get("extracted_price"),
+        "rating": candidate.get("extracted_rating"),
+        "page_excerpt": candidate.get("page_text_excerpt", "")[:240],
+    }
+
+
+def _product_snapshot(product: Product) -> dict[str, Any]:
+    return {
+        "name": product.name,
+        "price": product.price,
+        "rating": product.rating,
+        "source": product.source,
+        "url": product.url,
+        "confidence": product.confidence,
+        "key_features": product.key_features[:3],
+        "evidence_urls": product.evidence_urls[:3],
+    }
+
+
 # ── Main entry point ──────────────────────────────────────────────
 
 async def search_products(
     query: str,
     settings: Settings,
     max_results: int = FINAL_MAX_PRODUCTS,
+    on_step: ProgressCallback | None = None,
 ) -> ProductDiscoveryResult:
     """Retrieve and normalize product candidates for a shopper query.
 
@@ -104,40 +165,113 @@ async def search_products(
     Returns:
         Structured ProductDiscoveryResult with provenance.
     """
+    result, _debug = await search_products_with_debug(
+        query=query,
+        settings=settings,
+        max_results=max_results,
+        on_step=on_step,
+    )
+    return result
+
+
+async def search_products_with_debug(
+    query: str,
+    settings: Settings,
+    max_results: int = FINAL_MAX_PRODUCTS,
+    on_step: ProgressCallback | None = None,
+) -> tuple[ProductDiscoveryResult, dict[str, Any]]:
+    """Run product discovery and return both the final result and debug snapshots."""
     logger.info("Starting product discovery for: %s", query)
+    debug_snapshot: dict[str, Any] = {
+        "query": query,
+        "search_query": _build_search_query(query),
+        "stage": "search-started",
+        "candidates": [],
+        "enriched_candidates": [],
+        "normalized_products": [],
+        "summary": "",
+    }
+
+    await _emit_progress(
+        on_step,
+        "search-started",
+        f"Searching the web for product candidates matching '{query}'",
+        debug_snapshot,
+    )
 
     # Step 1: Candidate retrieval
     candidates = await asyncio.to_thread(_search_duckduckgo, query)
+    debug_snapshot["stage"] = "search-complete"
+    debug_snapshot["candidates"] = [_candidate_snapshot(item) for item in candidates[:SEARCH_MAX_RESULTS]]
+    await _emit_progress(
+        on_step,
+        "search-complete",
+        f"Collected {len(candidates)} web search candidates",
+        debug_snapshot,
+    )
     if not candidates:
         logger.warning("No search results for: %s", query)
-        return ProductDiscoveryResult(
+        result = ProductDiscoveryResult(
             query=query,
             products=[],
             summary=f"No product results found for '{query}'.",
         )
+        debug_snapshot["summary"] = result.summary
+        return result, debug_snapshot
 
     # Step 2: Deterministic enrichment
+    await _emit_progress(
+        on_step,
+        "enrichment-started",
+        f"Enriching the top {min(len(candidates), ENRICH_TOP_N)} candidate pages",
+        debug_snapshot,
+    )
     enriched = await _enrich_candidates(candidates[:ENRICH_TOP_N])
     usable = [c for c in enriched if c.get("enriched_title") or c.get("snippet")]
+    debug_snapshot["stage"] = "enrichment-complete"
+    debug_snapshot["enriched_candidates"] = [_candidate_snapshot(item) for item in usable[:ENRICH_TOP_N]]
+    await _emit_progress(
+        on_step,
+        "enrichment-complete",
+        f"Prepared {len(usable)} enriched candidates for normalization",
+        debug_snapshot,
+    )
 
     if not usable:
         logger.warning("No usable enrichment data for: %s", query)
-        return ProductDiscoveryResult(
+        result = ProductDiscoveryResult(
             query=query,
             products=[],
             summary=f"Search returned results but no usable product data for '{query}'.",
         )
+        debug_snapshot["summary"] = result.summary
+        return result, debug_snapshot
 
     # Step 3: GPT-4o-mini normalization
-    result = await _normalize_products(query, usable, settings, max_results)
-    return result
+    await _emit_progress(
+        on_step,
+        "normalization-started",
+        "Normalizing candidate data into distinct products",
+        debug_snapshot,
+    )
+    result, normalized_debug = await _normalize_products_with_debug(query, usable, settings, max_results)
+    debug_snapshot["stage"] = "normalization-complete"
+    debug_snapshot["normalized_products"] = normalized_debug.get("normalized_products", [])
+    debug_snapshot["summary"] = result.summary
+    await _emit_progress(
+        on_step,
+        "normalization-complete",
+        f"Normalized {len(result.products)} products for the final result",
+        debug_snapshot,
+    )
+    return result, debug_snapshot
 
 
 # ── Step 1: DuckDuckGo Search ─────────────────────────────────────
 
 def _search_duckduckgo(query: str) -> list[dict]:
     """Search DuckDuckGo for product candidates."""
-    search_query = f"{query} buy price review rating"
+    search_query = _build_search_query(query)
     logger.info("DuckDuckGo search: '%s'", search_query)
 
     try:
@@ -309,6 +443,22 @@ async def _normalize_products(
     max_results: int,
 ) -> ProductDiscoveryResult:
     """Use GPT-4o-mini to normalize raw candidates into structured products."""
+    result, _debug = await _normalize_products_with_debug(
+        query=query,
+        candidates=candidates,
+        settings=settings,
+        max_results=max_results,
+    )
+    return result
+
+
+async def _normalize_products_with_debug(
+    query: str,
+    candidates: list[dict],
+    settings: Settings,
+    max_results: int,
+) -> tuple[ProductDiscoveryResult, dict[str, Any]]:
+    """Use GPT-4o-mini to normalize raw candidates into structured products."""
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
     # Build evidence for the prompt
@@ -392,19 +542,30 @@ async def _normalize_products(
                 )
             )
 
-        return ProductDiscoveryResult(
+        result = ProductDiscoveryResult(
             query=query,
             products=products,
             summary=data.get("summary", ""),
         )
+        return result, {
+            "normalized_products": [_product_snapshot(product) for product in products],
+            "summary": result.summary,
+        }
 
     except Exception as exc:
         logger.error("GPT-4o-mini normalization failed: %s", exc)
-        return ProductDiscoveryResult(
+        result = ProductDiscoveryResult(
             query=query,
             products=[],
             summary=f"Product normalization failed: {exc}",
         )
+        return result, {
+            "normalized_products": [],
+            "summary": result.summary,
+            "error": str(exc),
+        }
+    finally:
+        await _close_async_client(client)
 
 
 def _find_evidence_urls(product_name: str, candidates: list[dict]) -> list[str]:

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FMAS Live Trace</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#08111f;--card:rgba(17,28,47,.94);--soft:rgba(255,255,255,.03);--line:#22344f;--text:#e6edf7;
+      --muted:#9bb0cb;--dim:#6b84a8;--accent:#2ec5ff;--blue:#4f46e5;--green:#22c55e;--yellow:#f59e0b;--red:#ef4444;
+    }
+    body{
+      min-height:100vh;color:var(--text);font:16px/1.5 "Segoe UI Variable","Trebuchet MS",sans-serif;
+      background:
+        radial-gradient(circle at top right,rgba(46,197,255,.16),transparent 32%),
+        radial-gradient(circle at top left,rgba(79,70,229,.14),transparent 25%),
+        linear-gradient(180deg,#07111f 0%,#091523 100%);
+      position:relative;overflow-x:hidden;
+    }
+    body::before{
+      content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;
+      background-image:
+        linear-gradient(rgba(155,176,203,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(155,176,203,.035) 1px, transparent 1px);
+      background-size:42px 42px;mask-image:linear-gradient(180deg, rgba(0,0,0,.2), rgba(0,0,0,.85));
+    }
+    a{color:inherit}.hidden{display:none!important}
+    .nav{position:sticky;top:0;z-index:20;display:flex;gap:1rem;align-items:center;padding:1rem 1.25rem;background:rgba(8,17,31,.86);border-bottom:1px solid var(--line);backdrop-filter:blur(16px)}
+    .brand{font-weight:800;color:var(--accent);text-decoration:none}
+    .nav .link{padding:.55rem .9rem;border-radius:999px;color:var(--muted);text-decoration:none;font-weight:600}
+    .nav .link.active,.nav .link:hover{background:rgba(46,197,255,.08);color:var(--text)}
+    .shell{max-width:1340px;margin:0 auto;padding:1.5rem}
+    .hero,.layout{display:grid;gap:1rem}
+    .hero{grid-template-columns:1.2fr .92fr;margin-bottom:1rem}
+    .layout{grid-template-columns:.92fr 1.28fr}
+    .stack{display:flex;flex-direction:column;gap:1rem}
+    .card{
+      position:relative;overflow:hidden;background:var(--card);border:1px solid var(--line);
+      border-radius:18px;padding:1rem;box-shadow:0 18px 36px rgba(3,8,18,.28)
+    }
+    .card::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(46,197,255,.55),transparent)}
+    .sticky{position:sticky;top:84px}
+    .eyebrow,.pill,.status,.stage{display:inline-flex;align-items:center;gap:.45rem;border-radius:999px;font-weight:700}
+    .eyebrow{padding:.35rem .72rem;border:1px solid rgba(46,197,255,.26);background:rgba(46,197,255,.08);color:var(--accent);font-size:.76rem;text-transform:uppercase;letter-spacing:.08em}
+    .hero h1{font-size:clamp(2rem,4vw,3rem);line-height:1.04;margin:.75rem 0}
+    .hero p,.sub,.mini p,.mini li,.mini a,.body,.note{color:var(--muted)}
+    .hero-badges,.quick,.pills,.metrics,.stages{display:flex;gap:.55rem;flex-wrap:wrap}
+    .hero-badges{margin-top:1rem}
+    .hero-badges span,.hint,.pill{padding:.35rem .72rem;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(155,176,203,.16);font-size:.78rem;color:var(--muted)}
+    .form{display:flex;gap:.7rem;padding:.7rem;border-radius:14px;border:1px solid var(--line);background:var(--soft)}
+    .form input{flex:1;border:none;outline:none;background:transparent;color:var(--text);font-size:1rem}
+    .form input::placeholder{color:var(--dim)}
+    .btn{border:none;border-radius:12px;padding:.82rem 1.15rem;font-weight:800;color:white;background:linear-gradient(135deg,var(--accent),var(--blue));cursor:pointer}
+    .btn:disabled{opacity:.55;cursor:not-allowed}
+    .quick{margin-top:.85rem}
+    .hint{cursor:pointer}
+    .hint:hover{color:var(--accent);border-color:rgba(46,197,255,.35)}
+    .status-row{display:flex;gap:.7rem;flex-wrap:wrap;align-items:center;margin-top:.9rem;font-size:.84rem;color:var(--muted)}
+    .status{padding:.35rem .72rem}
+    .status.queued{background:rgba(79,70,229,.16);color:#c7c3ff}
+    .status.running{background:rgba(46,197,255,.16);color:#9be7ff}
+    .status.completed{background:rgba(34,197,94,.16);color:#96f0b7}
+    .status.failed{background:rgba(239,68,68,.16);color:#ffb3b3}
+    .dot{width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+    .status.running .dot{animation:pulse 1.2s infinite}
+    @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.25);opacity:.55}}
+    .error{margin-top:.9rem;padding:.8rem .95rem;border-radius:12px;border:1px solid rgba(239,68,68,.35);background:rgba(127,29,29,.24);color:#fecaca}
+    .empty{padding:1rem;border-radius:14px;border:1px dashed rgba(155,176,203,.2);color:var(--dim);text-align:center}
+    h2{font-size:1rem;margin-bottom:.7rem}.sub{font-size:.84rem;margin-bottom:.9rem}
+    .overview,.items,.sources{display:grid;gap:.75rem}
+    .overview{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .items,.sources{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+    .meta,.metric,.mini,.source,.rec{border-radius:14px;background:var(--soft);border:1px solid rgba(155,176,203,.12)}
+    .meta,.metric{padding:.8rem}
+    .metric strong{display:block;font-size:1.08rem;color:var(--text)}
+    .metric span,.label,.section,.source small{font-size:.72rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+    .label{margin-bottom:.24rem}.value{font-size:.9rem;word-break:break-word}
+    .stages{margin-top:1rem}.stage{padding:.52rem .78rem;border:1px solid rgba(155,176,203,.16);background:rgba(255,255,255,.04);font-size:.78rem;color:var(--muted)}
+    .stage::before{content:"";width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
+    .stage.done{color:#96f0b7;background:rgba(34,197,94,.12)}
+    .stage.active{color:#9be7ff;background:rgba(46,197,255,.12)}
+    .stage.waiting{color:#c7c3ff;background:rgba(79,70,229,.12)}
+    .stage.error{color:#ffb3b3;background:rgba(239,68,68,.12)}
+    .timeline{display:flex;flex-direction:column;gap:.7rem;max-height:920px;overflow:auto;padding-right:.15rem}
+    .event{display:grid;grid-template-columns:12px minmax(0,1fr);gap:.75rem}
+    .rail{position:relative}.rail::before{content:"";position:absolute;left:5px;top:0;bottom:-.8rem;width:2px;background:rgba(155,176,203,.14)}
+    .event:last-child .rail::before{display:none}
+    .marker{width:12px;height:12px;border-radius:50%;position:relative;top:5px}.marker.info{background:#9bb0cb}.marker.active{background:var(--accent)}.marker.done{background:var(--green)}.marker.error{background:var(--red)}
+    .body{padding:.8rem .9rem;border-radius:14px;background:rgba(255,255,255,.025);border:1px solid rgba(155,176,203,.12)}
+    .head{display:flex;justify-content:space-between;gap:1rem;align-items:baseline;margin-bottom:.3rem}
+    .title{font-size:.92rem;font-weight:700;color:var(--text)}.time{font-size:.72rem;color:var(--dim);white-space:nowrap}
+    .agent{margin-top:.35rem;font-size:.74rem;color:var(--accent)}
+    .mini{padding:.9rem;min-width:0}.mini h3{font-size:.88rem;margin-bottom:.3rem}.mini ul{list-style:none;display:flex;flex-direction:column;gap:.3rem;margin-top:.45rem}
+    .mini a{color:var(--accent);text-decoration:none}.mini a:hover{text-decoration:underline}
+    .section{margin-bottom:.45rem}
+    .excerpt{margin-top:.5rem;padding:.75rem;border-radius:12px;background:rgba(5,10,20,.3);border:1px solid rgba(155,176,203,.1);white-space:pre-wrap;font-size:.8rem;color:var(--muted)}
+    .summary{padding:.9rem;border-radius:15px;background:linear-gradient(135deg,rgba(79,70,229,.15),rgba(46,197,255,.08));border:1px solid rgba(79,70,229,.26)}
+    .rec{padding:1rem}.rec-top{display:flex;justify-content:space-between;gap:1rem;align-items:start;margin-bottom:.55rem}
+    .rank{min-width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:800;background:linear-gradient(135deg,var(--yellow),#d97706);color:#211103}
+    .score{font-size:1.28rem;font-weight:800;color:var(--accent);white-space:nowrap}
+    .pill.sentiment-positive{background:rgba(34,197,94,.16);color:#96f0b7}.pill.sentiment-mixed{background:rgba(245,158,11,.16);color:#ffd38b}.pill.sentiment-negative{background:rgba(239,68,68,.16);color:#ffb3b3}
+    .source{display:block;text-decoration:none;padding:.8rem}.source:hover{border-color:rgba(46,197,255,.35)}
+    @media (max-width:1080px){.hero,.layout{grid-template-columns:1fr}.sticky{position:static}}
+    @media (max-width:640px){.shell{padding:1rem}.form{flex-direction:column}.overview{grid-template-columns:1fr}.head,.rec-top{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a class="brand" href="/">FMAS</a>
+    <a class="link" href="/">Search</a>
+    <a class="link active" href="/trace">Live Trace</a>
+  </nav>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="card">
+        <div class="eyebrow">Live Execution Trace</div>
+        <h1>Watch the agents work in real time.</h1>
+        <p>This page follows the orchestrator as it discovers agents, routes calls, polls A2A tasks, picks YouTube videos, extracts transcript evidence, and builds the final response.</p>
+        <div class="hero-badges">
+          <span>A2A discovery</span><span>Routing decisions</span><span>YouTube selection</span><span>Transcript evidence</span><span>Final sources</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Start a traced run</h2>
+        <p class="sub">Use this when you want to demo not just the answer, but how the answer was assembled.</p>
+        <div class="form">
+          <input id="query-input" placeholder="Try: best gaming monitor under 1500" autocomplete="off" />
+          <button id="run-button" class="btn" type="button">Run Live Trace</button>
+        </div>
+        <div id="quick-hints" class="quick"></div>
+        <div class="status-row">
+          <span id="status-pill" class="status queued"><span class="dot"></span><span id="status-text">Idle</span></span>
+          <span id="run-meta">No trace run started yet.</span>
+        </div>
+        <div id="error-box" class="error hidden"></div>
+      </div>
+    </section>
+
+    <section id="empty-state" class="card">
+      <h2>Nothing running yet</h2>
+      <p class="sub">Start a trace to see the background execution flow, intermediate evidence, and the final response contract.</p>
+      <div class="pills"><span class="pill">Real task polling</span><span class="pill">Agent debug snapshots</span><span class="pill">Unified response payload</span></div>
+    </section>
+
+    <section id="trace-view" class="layout hidden">
+      <div class="stack">
+        <div class="card sticky">
+          <h2>Run Overview</h2>
+          <div id="overview-grid" class="overview"></div>
+          <div id="metric-ribbon" class="metrics"></div>
+          <div id="stage-board" class="stages"></div>
+        </div>
+        <div class="card">
+          <h2>Timeline</h2>
+          <p class="sub">Every orchestrator and agent update lands here as it happens.</p>
+          <div id="timeline" class="timeline"></div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="card"><h2>Discovery and Routing</h2><div id="discovery-routing" class="stack"></div></div>
+        <div class="card"><h2>Product Discovery</h2><div id="product-trace" class="stack"></div></div>
+        <div class="card"><h2>YouTube Review Pipeline</h2><div id="review-traces" class="stack"></div></div>
+        <div class="card"><h2>Final User Response</h2><div id="final-response" class="stack"></div></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const hints = ["LG UltraGear GX9", "best wireless earbuds under 100", "top rated laptop for students 2025", "best gaming monitor under 1500"];
+      const state = { runId: "", snapshot: null, starting: false, error: "" };
+      let timer = null;
+      const el = {
+        input: document.getElementById("query-input"),
+        button: document.getElementById("run-button"),
+        hints: document.getElementById("quick-hints"),
+        pill: document.getElementById("status-pill"),
+        statusText: document.getElementById("status-text"),
+        runMeta: document.getElementById("run-meta"),
+        error: document.getElementById("error-box"),
+        empty: document.getElementById("empty-state"),
+        trace: document.getElementById("trace-view"),
+        overview: document.getElementById("overview-grid"),
+        metrics: document.getElementById("metric-ribbon"),
+        stages: document.getElementById("stage-board"),
+        timeline: document.getElementById("timeline"),
+        discovery: document.getElementById("discovery-routing"),
+        product: document.getElementById("product-trace"),
+        reviews: document.getElementById("review-traces"),
+        final: document.getElementById("final-response"),
+      };
+
+      const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      const toUrl = (v) => { try { const u = new URL(v, window.location.origin); return /https?:/.test(u.protocol) ? u.href : "#"; } catch { return "#"; } };
+      const arr = (v) => Array.isArray(v) ? v : [];
+      const fmtTime = (v) => { const d = new Date(v); return Number.isNaN(d.getTime()) ? String(v ?? "N/A") : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); };
+      const statusClass = (v) => ["queued", "running", "completed", "failed"].includes(v) ? v : "running";
+      const stop = () => { if (timer !== null) { window.clearInterval(timer); timer = null; } };
+
+      function renderHints() {
+        el.hints.innerHTML = hints.map((h) => `<button class="hint" type="button" data-q="${esc(h)}">${esc(h)}</button>`).join("");
+        el.hints.querySelectorAll(".hint").forEach((button) => button.addEventListener("click", () => { const q = button.getAttribute("data-q") || ""; el.input.value = q; void start(q); }));
+      }
+
+      function buildStages(snapshot) {
+        const routing = snapshot.routing || {};
+        const reviews = Object.values(snapshot.review_traces || {});
+        return [
+          { label: "Discovery", state: arr(snapshot.discovered_agents).length ? "done" : snapshot.status === "failed" ? "error" : "active" },
+          { label: "Routing", state: snapshot.routing ? "done" : snapshot.status === "failed" ? "error" : "waiting" },
+          { label: "Products", state: snapshot.product_trace ? (snapshot.product_trace.stage === "normalization-complete" ? "done" : "active") : routing.needs_product_discovery ? (snapshot.status === "failed" ? "error" : "waiting") : "waiting" },
+          { label: "Reviews", state: reviews.length ? (reviews.every((item) => item.stage === "summary-complete") ? "done" : "active") : routing.needs_youtube_reviews ? (snapshot.status === "failed" ? "error" : "waiting") : "waiting" },
+          { label: "Synthesis", state: snapshot.final_response ? (snapshot.status === "failed" ? "error" : "done") : snapshot.synthesis ? "active" : "waiting" },
+        ];
+      }
+
+      function renderStatus() {
+        const status = statusClass(state.snapshot ? state.snapshot.status : state.starting ? "running" : "queued");
+        el.pill.className = `status ${status}`;
+        el.statusText.textContent = state.starting && !state.snapshot ? "Starting..." : state.snapshot ? state.snapshot.status : "Idle";
+        el.runMeta.textContent = state.snapshot ? `Run ${state.snapshot.run_id} | Updated ${fmtTime(state.snapshot.updated_at)}` : state.starting ? "Creating a new traced run..." : "No trace run started yet.";
+      }
+
+      function renderOverview(snapshot) {
+        el.overview.innerHTML = [["Query", snapshot.query], ["Status", snapshot.status], ["Created", fmtTime(snapshot.created_at)], ["Updated", fmtTime(snapshot.updated_at)], ["Events", arr(snapshot.events).length], ["Errors", arr(snapshot.errors).length]]
+          .map(([label, value]) => `<div class="meta"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`).join("");
+        el.metrics.innerHTML = [
+          { label: "Agents", value: arr(snapshot.discovered_agents).length },
+          { label: "Routes", value: arr((snapshot.routing || {}).routes).length },
+          { label: "Review Runs", value: Object.keys(snapshot.review_traces || {}).length },
+          { label: "Sources", value: arr((snapshot.final_response || {}).sources).length },
+        ].map((item) => `<div class="metric"><strong>${esc(item.value)}</strong><span>${esc(item.label)}</span></div>`).join("");
+        el.stages.innerHTML = buildStages(snapshot).map((stage) => `<div class="stage ${esc(stage.state)}">${esc(stage.label)}</div>`).join("");
+      }
+
+      function renderTimeline(snapshot) {
+        el.timeline.innerHTML = arr(snapshot.events).length ? arr(snapshot.events).map((event) => `<div class="event"><div class="rail"><div class="marker ${esc(event.status || "info")}"></div></div><div class="body"><div class="head"><div class="title">${esc(event.title || "Untitled event")}</div><div class="time">${esc(fmtTime(event.timestamp))}</div></div>${event.detail ? `<div>${esc(event.detail)}</div>` : ""}${event.agent ? `<div class="agent">${esc(event.agent)}</div>` : ""}</div></div>`).join("") : '<div class="empty">Waiting for the first trace events...</div>';
+      }
+
+      function renderDiscovery(snapshot) {
+        const agents = arr(snapshot.discovered_agents);
+        const routing = snapshot.routing || null;
+        const agentsHtml = agents.length ? `<div><div class="section">Discovered Agents</div><div class="items">${agents.map((agent) => `<div class="mini"><h3>${esc(agent.name || agent.agent_name || "Unnamed agent")}</h3><p>${esc(agent.description || "No description")}</p><ul><li><strong>Card:</strong> <a href="${esc(toUrl(agent.card_url))}" target="_blank" rel="noopener noreferrer">${esc(agent.card_url || "n/a")}</a></li><li><strong>Endpoint:</strong> <a href="${esc(toUrl(agent.url))}" target="_blank" rel="noopener noreferrer">${esc(agent.url || "n/a")}</a></li><li><strong>Skills:</strong> ${esc(arr(agent.skills).map((skill) => skill.name).join(", ") || "None")}</li></ul></div>`).join("")}</div></div>` : '<div class="empty">No discovered agent cards yet.</div>';
+        const routesHtml = routing && arr(routing.routes).length ? `<div><div class="section">Resolved Routes</div><div class="pills"><span class="pill">Products: ${routing.needs_product_discovery ? "yes" : "no"}</span><span class="pill">Reviews: ${routing.needs_youtube_reviews ? "yes" : "no"}</span></div><div class="items">${routing.routes.map((route) => `<div class="mini"><h3>${esc(route.agent_name)}</h3><p><strong>Skill:</strong> ${esc(route.skill_id || "n/a")}</p><p><strong>Input:</strong> ${esc(route.query_text || "")}</p><p style="margin-top:.35rem"><a href="${esc(toUrl(route.agent_url))}" target="_blank" rel="noopener noreferrer">${esc(route.agent_url || "")}</a></p></div>`).join("")}</div></div>` : '<div class="empty">Routing has not produced downstream calls yet.</div>';
+        el.discovery.innerHTML = agentsHtml + routesHtml;
+      }
+
+      function renderProduct(snapshot) {
+        const trace = snapshot.product_trace;
+        const cards = (list, render, empty) => list.length ? `<div class="items">${list.map(render).join("")}</div>` : `<div class="empty">${empty}</div>`;
+        if (!trace) { el.product.innerHTML = '<div class="empty">Product discovery trace data will appear here once the agent starts publishing snapshots.</div>'; return; }
+        el.product.innerHTML = `<div class="pills"><span class="pill">Stage: ${esc(trace.stage || "unknown")}</span><span class="pill">Search query: ${esc(trace.search_query || "n/a")}</span></div><div><div class="section">Raw Search Candidates</div>${cards(arr(trace.candidates), (c) => `<div class="mini"><h3>${esc(c.title || "Untitled result")}</h3><p>${esc(c.snippet || "No snippet")}</p><ul><li><strong>Merchant:</strong> ${esc(c.merchant || "unknown")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul></div>`, "Waiting for candidate URLs...")}</div><div><div class="section">Enriched Candidates</div>${cards(arr(trace.enriched_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><ul><li><strong>Price:</strong> ${esc(c.price || "N/A")}</li><li><strong>Rating:</strong> ${esc(c.rating || "N/A")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul>${c.page_excerpt ? `<div class="excerpt">${esc(c.page_excerpt)}</div>` : ""}</div>`, "Waiting for enrichment data...")}</div><div><div class="section">Normalized Products</div>${cards(arr(trace.normalized_products), (p) => `<div class="mini"><h3>${esc(p.name || "Unnamed product")}</h3><div class="pills">${p.price ? `<span class="pill">${esc(p.price)}</span>` : ""}${p.rating ? `<span class="pill">${esc(p.rating)}</span>` : ""}<span class="pill">${esc(p.source || "unknown source")}</span></div><p style="margin-top:.35rem"><a href="${esc(toUrl(p.url))}" target="_blank" rel="noopener noreferrer">${esc(p.url || "")}</a></p>${arr(p.key_features).length ? `<ul>${arr(p.key_features).map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}</div>`, "Waiting for normalized product output...")}</div>${trace.summary ? `<div class="summary"><div class="section" style="color:#d7deff;margin-bottom:.35rem">Agent Summary</div><div class="note">${esc(trace.summary)}</div></div>` : ""}`;
+      }
+
+      function renderReviews(snapshot) {
+        const entries = Object.entries(snapshot.review_traces || {});
+        if (!entries.length) { el.reviews.innerHTML = '<div class="empty">YouTube review trace data will appear here once review tasks start returning snapshots.</div>'; return; }
+        el.reviews.innerHTML = entries.map(([name, trace]) => `<div class="mini"><h3>${esc(name)}</h3><div class="pills"><span class="pill">Stage: ${esc(trace.stage || "unknown")}</span><span class="pill">Query: ${esc(trace.search_query || "n/a")}</span></div><div class="section" style="margin-top:.8rem">Chosen Videos</div>${arr(trace.ranked_videos).length ? `<div class="items">${arr(trace.ranked_videos).map((video) => `<div class="mini"><h3>${esc(video.title || "Untitled video")}</h3><p>${esc(video.channel || "Unknown channel")}</p><ul><li><strong>Published:</strong> ${esc(video.published_at || "N/A")}</li><li><strong>Views:</strong> ${esc(video.view_count || "N/A")}</li><li><a href="${esc(toUrl(video.url))}" target="_blank" rel="noopener noreferrer">Open video</a></li></ul></div>`).join("")}</div>` : '<div class="empty">Waiting for video selection...</div>'}<div class="section" style="margin-top:.8rem">Transcript Evidence</div>${arr(trace.evidence).length ? `<div class="stack">${arr(trace.evidence).map((video) => `<div class="mini"><h3>${esc(video.title || "Video evidence")}</h3><p>${esc(video.channel || "Unknown channel")} | ${esc(video.evidence_source || "source n/a")}</p>${video.url ? `<p style="margin-top:.35rem"><a href="${esc(toUrl(video.url))}" target="_blank" rel="noopener noreferrer">${esc(video.url)}</a></p>` : ""}${video.transcript_excerpt ? `<div class="excerpt">${esc(video.transcript_excerpt)}</div>` : ""}</div>`).join("")}</div>` : '<div class="empty">Waiting for transcript snippets...</div>'}<div class="section" style="margin-top:.8rem">Structured Summary</div>${trace.summary ? `<div class="summary"><div class="note"><strong>Sentiment:</strong> ${esc(trace.summary.overall_sentiment || "n/a")} | <strong>Score:</strong> ${esc(trace.summary.score ?? "n/a")} | <strong>Confidence:</strong> ${esc(trace.summary.confidence ?? "n/a")}</div><div class="note" style="margin-top:.55rem">${esc(trace.summary.recommendation || "No recommendation text")}</div><div class="pills" style="margin-top:.65rem">${arr(trace.summary.pros).map((i) => `<span class="pill">${esc(i)}</span>`).join("")}${arr(trace.summary.cons).map((i) => `<span class="pill" style="background:rgba(239,68,68,.12);color:#ffb3b3">${esc(i)}</span>`).join("")}</div></div>` : '<div class="empty">Waiting for the review summary...</div>'}</div>`).join("");
+      }
+
+      function renderFinal(snapshot) {
+        const final = snapshot.final_response;
+        const synthesis = snapshot.synthesis || null;
+        if (!final) { el.final.innerHTML = '<div class="empty">The unified response will appear here when synthesis completes.</div>'; return; }
+        el.final.innerHTML = `${synthesis ? `<div class="pills"><span class="pill">Synthesis: ${esc(synthesis.status || "done")}</span><span class="pill">Recommendations: ${esc(synthesis.recommendation_count ?? arr(final.recommendations).length)}</span><span class="pill">Sources: ${esc(synthesis.source_count ?? arr(final.sources).length)}</span></div>` : ""}${final.notes ? `<div class="error" style="margin-top:0;margin-bottom:.85rem">${esc(final.notes)}</div>` : ""}<div class="stack">${arr(final.recommendations).length ? arr(final.recommendations).map((item, index) => `<div class="rec"><div class="rec-top"><div style="display:flex;gap:.75rem;align-items:flex-start"><div class="rank">${esc(item.rank ?? index + 1)}</div><div><div class="title">${esc(item.product_name || "Unnamed product")}</div><div class="pills" style="margin-top:.4rem">${item.price ? `<span class="pill">${esc(item.price)}</span>` : ""}${item.rating ? `<span class="pill">${esc(item.rating)}</span>` : ""}<span class="pill ${item.sentiment ? `sentiment-${esc(item.sentiment)}` : ""}">${esc(item.sentiment || "unknown")}</span></div></div></div><div class="score">${esc(item.score ?? "N/A")}</div></div><div class="note">${esc(item.rationale || "No rationale provided.")}</div><div class="pills" style="margin-top:.65rem">${arr(item.pros).map((p) => `<span class="pill" style="background:rgba(34,197,94,.12);color:#96f0b7">${esc(p)}</span>`).join("")}${arr(item.cons).map((c) => `<span class="pill" style="background:rgba(239,68,68,.12);color:#ffb3b3">${esc(c)}</span>`).join("")}</div></div>`).join("") : '<div class="empty">No recommendations returned.</div>'}</div><div class="section" style="margin-top:.9rem">Sources shown to the user</div>${arr(final.sources).length ? `<div class="sources">${arr(final.sources).map((source) => `<a class="source" href="${esc(toUrl(source.url))}" target="_blank" rel="noopener noreferrer">${esc(source.title || source.url || "Untitled source")}<small>${esc(source.agent || "unknown agent")} | ${esc(source.type || "source")}</small></a>`).join("")}</div>` : '<div class="empty">No source links were returned.</div>'}`;
+      }
+
+      function render() {
+        renderStatus();
+        el.error.classList.toggle("hidden", !state.error);
+        el.error.textContent = state.error || "";
+        const hasSnapshot = Boolean(state.snapshot);
+        el.empty.classList.toggle("hidden", hasSnapshot);
+        el.trace.classList.toggle("hidden", !hasSnapshot);
+        el.button.disabled = state.starting || !el.input.value.trim();
+        el.button.textContent = state.starting ? "Starting..." : "Run Live Trace";
+        el.input.disabled = state.starting;
+        if (!hasSnapshot) return;
+        renderOverview(state.snapshot);
+        renderTimeline(state.snapshot);
+        renderDiscovery(state.snapshot);
+        renderProduct(state.snapshot);
+        renderReviews(state.snapshot);
+        renderFinal(state.snapshot);
+      }
+
+      async function poll() {
+        if (!state.runId) return;
+        try {
+          const response = await fetch(`/query/trace/${encodeURIComponent(state.runId)}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`Trace polling failed with ${response.status}`);
+          state.snapshot = await response.json();
+          state.error = "";
+          render();
+          if (["completed", "failed"].includes(state.snapshot.status)) stop();
+        } catch (error) {
+          state.error = error instanceof Error ? error.message : "Unexpected polling error";
+          render();
+        }
+      }
+
+      async function start(queryOverride) {
+        const query = (queryOverride || el.input.value).trim();
+        if (!query) return;
+        stop();
+        state.starting = true;
+        state.error = "";
+        state.snapshot = null;
+        state.runId = "";
+        el.input.value = query;
+        render();
+        try {
+          const response = await fetch("/query/trace", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query }),
+          });
+          if (!response.ok) throw new Error(`Trace start failed with ${response.status}: ${await response.text()}`);
+          const payload = await response.json();
+          state.runId = payload.run_id;
+          state.starting = false;
+          await poll();
+          timer = window.setInterval(poll, 900);
+        } catch (error) {
+          state.starting = false;
+          state.error = error instanceof Error ? error.message : "Unexpected trace error";
+          render();
+        }
+      }
+
+      renderHints();
+      el.button.addEventListener("click", () => { void start(); });
+      el.input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void start(); } });
+      el.input.addEventListener("input", () => { el.button.disabled = state.starting || !el.input.value.trim(); });
+      window.addEventListener("beforeunload", stop);
+      render();
+    })();
+  </script>
+</body>
+</html>

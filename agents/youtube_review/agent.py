@@ -14,6 +14,7 @@ import json
 import logging
 import math
 from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable
 
 from googleapiclient.discovery import build
 from openai import AsyncOpenAI
@@ -23,6 +24,8 @@ from common.a2a_models import ReviewSummary, VideoSource
 from common.config import Settings
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, str, dict[str, Any]], Awaitable[None] | None]
 
 # ── Constants ─────────────────────────────────────────────────────
 
@@ -68,9 +71,71 @@ Your task:
 7. The recommendation should be 2-3 sentences summarizing the overall verdict."""
 
 
+async def _emit_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    message: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Publish a progress snapshot if a callback was provided."""
+    if callback is None:
+        return
+
+    result = callback(stage, message, json.loads(json.dumps(snapshot)))
+    if asyncio.iscoroutine(result):
+        await result
+
+
+async def _close_async_client(client: Any) -> None:
+    """Best-effort close for SDK clients used in async helpers."""
+    close_method = getattr(client, "close", None) or getattr(client, "aclose", None)
+    if close_method is None:
+        return
+
+    result = close_method()
+    if asyncio.iscoroutine(result):
+        await result
+
+
+def _build_review_query(product_name: str) -> str:
+    return f"{product_name} review"
+
+
+def _video_trace_snapshot(video: dict[str, Any], include_excerpt: bool = False) -> dict[str, Any]:
+    snapshot = {
+        "video_id": video.get("video_id"),
+        "title": video.get("title", ""),
+        "channel": video.get("channel", ""),
+        "published_at": video.get("published_at", ""),
+        "view_count": video.get("view_count"),
+        "url": f"https://youtube.com/watch?v={video.get('video_id', '')}" if video.get("video_id") else "",
+        "evidence_source": video.get("evidence_source"),
+    }
+    if include_excerpt:
+        snapshot["transcript_excerpt"] = (video.get("transcript") or "")[:900]
+    return snapshot
+
+
+def _summary_snapshot(summary: ReviewSummary) -> dict[str, Any]:
+    return {
+        "product_name": summary.product_name,
+        "overall_sentiment": summary.overall_sentiment,
+        "score": summary.score,
+        "pros": summary.pros[:5],
+        "cons": summary.cons[:5],
+        "key_quotes": summary.key_quotes[:3],
+        "recommendation": summary.recommendation,
+        "confidence": summary.confidence,
+    }
+
+
 # ── Main entry point ──────────────────────────────────────────────
 
-async def get_review_summary(product_name: str, settings: Settings) -> ReviewSummary:
+async def get_review_summary(
+    product_name: str,
+    settings: Settings,
+    on_step: ProgressCallback | None = None,
+) -> ReviewSummary:
     """Retrieve and summarize YouTube reviews for a product.
 
     Args:
@@ -80,7 +145,37 @@ async def get_review_summary(product_name: str, settings: Settings) -> ReviewSum
     Returns:
         A structured ReviewSummary with sentiment, pros/cons, and sources.
     """
+    summary, _debug = await get_review_summary_with_debug(
+        product_name,
+        settings,
+        on_step=on_step,
+    )
+    return summary
+
+
+async def get_review_summary_with_debug(
+    product_name: str,
+    settings: Settings,
+    on_step: ProgressCallback | None = None,
+) -> tuple[ReviewSummary, dict[str, Any]]:
+    """Retrieve review evidence and return both the summary and trace data."""
     logger.info("Starting review pipeline for: %s", product_name)
+    debug_snapshot: dict[str, Any] = {
+        "product_name": product_name,
+        "search_query": _build_review_query(product_name),
+        "stage": "search-started",
+        "initial_videos": [],
+        "ranked_videos": [],
+        "evidence": [],
+        "summary": None,
+    }
+
+    await _emit_progress(
+        on_step,
+        "search-started",
+        f"Searching YouTube for review videos about {product_name}",
+        debug_snapshot,
+    )
 
     # Step 1: Search YouTube
     videos = await asyncio.to_thread(
@@ -88,11 +183,27 @@ async def get_review_summary(product_name: str, settings: Settings) -> ReviewSum
         product_name,
         settings.YOUTUBE_API_KEY,
     )
+    debug_snapshot["stage"] = "search-complete"
+    debug_snapshot["initial_videos"] = [_video_trace_snapshot(video) for video in videos]
+    await _emit_progress(
+        on_step,
+        "search-complete",
+        f"Collected {len(videos)} YouTube candidates",
+        debug_snapshot,
+    )
     if not videos:
         logger.warning("No YouTube videos found for: %s", product_name)
-        return _empty_review(product_name, "No YouTube review videos found.")
+        summary = _empty_review(product_name, "No YouTube review videos found.")
+        debug_snapshot["summary"] = _summary_snapshot(summary)
+        return summary, debug_snapshot
 
     # Step 2: Fetch metadata and rerank
+    await _emit_progress(
+        on_step,
+        "metadata-started",
+        "Fetching metadata and selecting the most useful review videos",
+        debug_snapshot,
+    )
     enriched = await asyncio.to_thread(
         _fetch_video_metadata,
         videos,
@@ -100,13 +211,44 @@ async def get_review_summary(product_name: str, settings: Settings) -> ReviewSum
     )
     ranked = _rerank_candidates(enriched)[:TOP_K_VIDEOS]
     logger.info("Reranked to top %d videos", len(ranked))
+    debug_snapshot["stage"] = "ranking-complete"
+    debug_snapshot["ranked_videos"] = [_video_trace_snapshot(video) for video in ranked]
+    await _emit_progress(
+        on_step,
+        "ranking-complete",
+        f"Selected {len(ranked)} ranked review videos",
+        debug_snapshot,
+    )
 
     # Step 3: Extract transcripts
+    await _emit_progress(
+        on_step,
+        "transcript-started",
+        "Extracting transcript evidence from the ranked videos",
+        debug_snapshot,
+    )
     evidence = await asyncio.to_thread(_extract_transcripts, ranked)
     usable_evidence = _filter_usable_evidence(evidence)
+    debug_snapshot["stage"] = "transcript-complete"
+    debug_snapshot["evidence"] = [
+        _video_trace_snapshot(video, include_excerpt=True)
+        for video in usable_evidence
+    ]
+    await _emit_progress(
+        on_step,
+        "transcript-complete",
+        f"Prepared transcript evidence from {len(usable_evidence)} videos",
+        debug_snapshot,
+    )
 
     # Step 4: Summarize with GPT-4o-mini
     if usable_evidence:
+        await _emit_progress(
+            on_step,
+            "summary-started",
+            "Summarizing review evidence into pros, cons, and sentiment",
+            debug_snapshot,
+        )
         summary = await _summarize_reviews(product_name, usable_evidence, settings)
     else:
         logger.warning("No transcript or description evidence available for: %s", product_name)
@@ -117,8 +259,16 @@ async def get_review_summary(product_name: str, settings: Settings) -> ReviewSum
 
     # Attach video sources
     summary.sources = _build_video_sources(ranked)
+    debug_snapshot["stage"] = "summary-complete"
+    debug_snapshot["summary"] = _summary_snapshot(summary)
+    await _emit_progress(
+        on_step,
+        "summary-complete",
+        "Review synthesis complete",
+        debug_snapshot,
+    )
 
-    return summary
+    return summary, debug_snapshot
 
 
 # ── Step 1: YouTube Search ────────────────────────────────────────
@@ -131,7 +281,7 @@ def _search_youtube(product_name: str, api_key: str) -> list[dict]:
         datetime.now(timezone.utc) - timedelta(days=RECENCY_WINDOW_MONTHS * 30)
     ).isoformat()
 
-    query = f"{product_name} review"
+    query = _build_review_query(product_name)
     logger.info("YouTube search: q='%s', publishedAfter=%s", query, published_after[:10])
 
     try:
@@ -371,6 +521,8 @@ async def _summarize_reviews(
     except Exception as exc:
         logger.error("GPT-4o-mini summarization failed: %s", exc)
         return _empty_review(product_name, f"Summarization failed: {exc}")
+    finally:
+        await _close_async_client(client)
 
 
 # ── Fallback ──────────────────────────────────────────────────────

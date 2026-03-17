@@ -179,6 +179,14 @@
 
     .hint-chip:hover { border-color: var(--accent); color: var(--accent); }
 
+    .trace-link {
+      color: var(--cyan);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .trace-link:hover { color: #67e8f9; }
+
     .loading-container {
       display: flex;
       flex-direction: column;
@@ -624,6 +632,9 @@
             <button id="search-button" class="search-btn" type="button">Search</button>
           </div>
           <div id="search-hints" class="search-hints"></div>
+          <div style="margin-top: 0.85rem; font-size: 0.82rem; color: var(--text-secondary);">
+            Want to watch the orchestration live? <a class="trace-link" href="/trace">Open Live Trace</a>
+          </div>
         </div>
 
         <div id="loading-container" class="loading-container hidden">

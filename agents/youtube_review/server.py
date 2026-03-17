@@ -6,6 +6,7 @@ extracts transcripts, and returns a structured ReviewSummary via GPT-4o-mini.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import FastAPI
@@ -78,26 +79,71 @@ async def handle_send_message(
 
     logger.info("Received review request for: %s", product_name)
     settings = get_settings()
-    task_store.update_status(
-        task.id,
-        "working",
-        make_agent_message(f"Collecting YouTube reviews for {product_name}"),
+    debug_snapshot = {
+        "product_name": product_name,
+        "search_query": "",
+        "stage": "accepted",
+        "initial_videos": [],
+        "ranked_videos": [],
+        "evidence": [],
+        "summary": None,
+    }
+
+    async def publish_debug(stage: str, message: str, payload: dict) -> None:
+        debug_snapshot.update(payload)
+        debug_snapshot["stage"] = stage
+        task_store.update_status(
+            task.id,
+            "working",
+            make_agent_message(message),
+        )
+        task_store.set_artifacts(
+            task.id,
+            [
+                make_artifact(
+                    name="review-debug",
+                    text=json.dumps(debug_snapshot, indent=2),
+                    metadata={"schema": "ReviewDebugTrace", "stage": stage},
+                )
+            ],
+        )
+
+    await publish_debug(
+        "accepted",
+        f"Collecting YouTube reviews for {product_name}",
+        debug_snapshot,
     )
 
     try:
-        review = await get_review_summary(product_name, settings)
-
-        artifact = make_artifact(
+        try:
+            review = await get_review_summary(
+                product_name,
+                settings,
+                on_step=publish_debug,
+            )
+        except TypeError as exc:
+            if "on_step" not in str(exc):
+                raise
+            review = await get_review_summary(
+                product_name,
+                settings,
+            )
+        result_artifact = make_artifact(
             name="review-summary",
             text=review.model_dump_json(indent=2),
             metadata={"schema": "ReviewSummary"},
+        )
+        debug_artifact = make_artifact(
+            name="review-debug",
+            text=json.dumps(debug_snapshot, indent=2),
+            metadata={"schema": "ReviewDebugTrace", "stage": "completed"},
         )
 
         task.status = TaskStatus(
             state="completed",
             message=make_agent_message(f"Review summary for {product_name}"),
         )
-        task.artifacts = [artifact]
+        task.artifacts = [result_artifact, debug_artifact]
 
     except Exception as exc:
         logger.exception("Review pipeline failed for: %s", product_name)
