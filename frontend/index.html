@@ -683,7 +683,7 @@
             <div class="arch-node orchestrator">
               <h4>Central Orchestrator</h4>
               <p>LangGraph StateGraph</p>
-              <p>Deterministic routing + GPT synthesis</p>
+              <p>Routing, synthesis, and live trace runs</p>
               <div class="port">:8000</div>
               <div class="arch-label">FastAPI</div>
             </div>
@@ -692,14 +692,14 @@
               <div class="arch-node product">
                 <h4>Product Discovery</h4>
                 <p>DuckDuckGo + Web Enrichment</p>
-                <p>URL grounding + MCP tool</p>
+                <p>URL grounding + MCP + debug snapshots</p>
                 <div class="port">:5002</div>
                 <div class="arch-label">A2A + MCP</div>
               </div>
               <div class="arch-node youtube">
                 <h4>YouTube Review</h4>
                 <p>Data API v3 + Transcripts</p>
-                <p>Sentiment analysis</p>
+                <p>Video ranking, transcript evidence, summary</p>
                 <div class="port">:5001</div>
                 <div class="arch-label">A2A</div>
               </div>
@@ -731,7 +731,7 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Execute Product Discovery</h4>
-                <p>Send the query via A2A. The product agent searches DuckDuckGo, enriches candidates, and grounds all returned product links against retrieved evidence.</p>
+                <p>Send the query via A2A. The product agent searches DuckDuckGo, enriches candidates, grounds product links against evidence, and now emits debug snapshots for live traced runs.</p>
               </div>
             </div>
             <div class="pipeline-step step-4">
@@ -739,14 +739,14 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Execute YouTube Reviews</h4>
-                <p>Fan out review requests for discovered products with bounded concurrency. The agent fetches transcripts and builds sentiment-backed review summaries.</p>
+                <p>Fan out review requests for discovered products with bounded concurrency. The agent selects videos, extracts transcript evidence, builds sentiment-backed review summaries, and publishes in-flight trace data.</p>
               </div>
             </div>
             <div class="pipeline-step step-5">
               <div class="step-marker">5</div>
               <div class="step-content">
                 <h4>Synthesize</h4>
-                <p>GPT-4o-mini merges product signals and review evidence into a ranked response, including the explicit source links returned by the agents.</p>
+                <p>GPT-4o-mini merges product signals and review evidence into a ranked response, including explicit source links, while the orchestrator can expose a live trace view of the full run.</p>
               </div>
             </div>
           </div>
@@ -779,6 +779,10 @@
               <h4><span class="feature-icon">S</span> Structured Output</h4>
               <p>Pydantic models and JSON schemas validate the final recommendation payload before it is rendered to the user.</p>
             </div>
+            <div class="feature-card">
+              <h4><span class="feature-icon">L</span> Live Traceability</h4>
+              <p>A traced query mode records discovery, routing, task polling, selected videos, transcript evidence, and the final grounded response in real time.</p>
+            </div>
           </div>
         </div>
 
@@ -800,6 +804,10 @@
             <div class="protocol-card">
               <h4>JSON-RPC 2.0</h4>
               <p>The shared transport layer validates the <code>jsonrpc</code> field strictly and returns protocol-correct errors for malformed envelopes.</p>
+            </div>
+            <div class="protocol-card">
+              <h4>Trace API</h4>
+              <p>The orchestrator exposes traced runs through REST endpoints so the frontend can poll live snapshots of agent progress, debug artifacts, and the final response.</p>
             </div>
           </div>
         </div>
