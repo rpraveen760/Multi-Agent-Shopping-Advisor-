@@ -100,6 +100,7 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         state = {
             "query": "https://www.youtube.com/watch?v=abc123",
             "youtube_url": "https://www.youtube.com/watch?v=abc123",
+            "session_id": "session-123",
             "chat_message": "What product is being reviewed?",
             "find_similar_products": True,
             "settings": SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
@@ -132,6 +133,7 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         fake_client.send_message.assert_awaited_once()
         _, payload = fake_client.send_message.await_args.args[:2]
         self.assertIn("\"youtube_url\": \"https://www.youtube.com/watch?v=abc123\"", payload)
+        self.assertIn("\"session_id\": \"session-123\"", payload)
         self.assertEqual(
             fake_client.send_message.await_args.kwargs["metadata"]["product_mcp_url"],
             "http://localhost:5002/mcp",

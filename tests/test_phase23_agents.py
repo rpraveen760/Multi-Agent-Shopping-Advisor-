@@ -637,7 +637,7 @@ class YouTubeReviewAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.history[1].role, "assistant")
         finally:
             if result.session_id:
-                review_sessions.SESSION_STORE.replace_history(result.session_id, [])
+                review_sessions.SESSION_STORE.pop(result.session_id)
 
     async def test_chat_with_video_session_uses_persisted_history(self):
         settings = SimpleNamespace(
@@ -693,7 +693,99 @@ class YouTubeReviewAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(response.history), 4)
             self.assertEqual(response.history[-1].content, "The reviewer says the pen feels natural for sketching.")
         finally:
-            review_sessions.SESSION_STORE.replace_history(session.session_id, [])
+            review_sessions.SESSION_STORE.pop(session.session_id)
+
+    async def test_video_analysis_refresh_reuses_session_and_cleans_prior_video_namespace(self):
+        settings = SimpleNamespace(
+            YOUTUBE_API_KEY="yt-key",
+            OPENAI_API_KEY="oa-key",
+            OPENAI_MODEL="gpt-4o-mini",
+            OPENAI_EMBEDDING_MODEL="text-embedding-3-small",
+            OPENAI_EMBEDDING_DIMENSIONS=512,
+            ENABLE_PINECONE=True,
+            PINECONE_API_KEY="pc-key",
+            YOUTUBE_TRANSCRIPT_CHUNK_SIZE=900,
+            YOUTUBE_TRANSCRIPT_CHUNK_OVERLAP=120,
+        )
+        prior_video = VideoMetadata(
+            video_id="prior-vid",
+            video_url="https://www.youtube.com/watch?v=prior-vid",
+            title="Prior Mouse Review",
+            channel="Tech Lab",
+            published_at="2026-03-01",
+            view_count="1000",
+        )
+        refreshed_video = VideoMetadata(
+            video_id="fresh-vid",
+            video_url="https://www.youtube.com/watch?v=fresh-vid",
+            title="Fresh Mouse Review",
+            channel="Tech Lab",
+            published_at="2026-03-02",
+            view_count="1200",
+        )
+        extracted = ExtractedProductDetails(
+            product_name="Razer Viper V3 Pro",
+            category="gaming mouse",
+            features=["wireless", "lightweight"],
+            price="$159.99",
+            summary="A strong competitive gaming mouse.",
+            evidence_quotes=["Lightweight shell"],
+            confidence=0.88,
+        )
+        prior_session = review_sessions.SESSION_STORE.create(
+            video=prior_video,
+            transcript_hash="hash-prior",
+            extracted_product=extracted,
+            session_id="session-refresh-1",
+        )
+        review_sessions.SESSION_STORE.append_turn(
+            prior_session.session_id,
+            role="user",
+            content="What did the old review say?",
+        )
+
+        try:
+            with patch(
+                "agents.youtube_review.video_analysis._fetch_video_metadata",
+                return_value=refreshed_video,
+            ), patch(
+                "agents.youtube_review.video_analysis._fetch_transcript_text",
+                return_value="Fresh transcript for a different mouse review.",
+            ), patch(
+                "agents.youtube_review.video_analysis.index_transcript",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            transcript_hash="hash-fresh",
+                            chunks=[TranscriptChunk(chunk_index=0, text="Fresh transcript chunk")],
+                        ),
+                        True,
+                    )
+                ),
+            ), patch(
+                "agents.youtube_review.video_analysis._extract_product_details",
+                new=AsyncMock(return_value=extracted),
+            ), patch(
+                "agents.youtube_review.video_analysis.clear_transcript_index",
+                new=AsyncMock(return_value=True),
+            ) as clear_mock:
+                result, debug = await video_analysis_agent.analyze_video_review(
+                    YouTubeVideoRequest(
+                        youtube_url=refreshed_video.video_url,
+                        session_id=prior_session.session_id,
+                    ),
+                    settings,
+                )
+
+            clear_mock.assert_awaited_once_with(video_id="prior-vid", settings=settings)
+            self.assertEqual(result.session_id, prior_session.session_id)
+            refreshed_session = review_sessions.SESSION_STORE.get(prior_session.session_id)
+            self.assertIsNotNone(refreshed_session)
+            self.assertEqual(refreshed_session.video.video_id, "fresh-vid")
+            self.assertEqual(refreshed_session.history, [])
+            self.assertEqual(debug["refreshed_video_id"], "prior-vid")
+        finally:
+            review_sessions.SESSION_STORE.pop(prior_session.session_id)
 
 
 if __name__ == "__main__":

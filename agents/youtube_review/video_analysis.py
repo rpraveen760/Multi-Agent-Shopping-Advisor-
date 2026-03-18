@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from openai import AsyncOpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 
-from agents.youtube_review.rag import answer_chat_over_transcript, index_transcript
+from agents.youtube_review.rag import answer_chat_over_transcript, clear_transcript_index, index_transcript
 from agents.youtube_review.sessions import SESSION_STORE
 from common.a2a_models import (
     ExtractedProductDetails,
@@ -296,6 +296,7 @@ async def analyze_video_review(
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
     try:
+        existing_session = SESSION_STORE.get(request.session_id) if request.session_id else None
         indexed, reindexed = await index_transcript(
             video=video,
             transcript_text=transcript_text,
@@ -318,6 +319,16 @@ async def analyze_video_review(
             client=client,
         )
         debug_snapshot["extracted_product"] = product_details.model_dump()
+        if existing_session and existing_session.video.video_id != video.video_id:
+            await clear_transcript_index(video_id=existing_session.video.video_id, settings=settings)
+            debug_snapshot["refreshed_session_id"] = existing_session.session_id
+            debug_snapshot["refreshed_video_id"] = existing_session.video.video_id
+            await _emit_progress(
+                on_step,
+                "session-refreshed",
+                "Cleared transcript retrieval state for the prior session before replacing it.",
+                debug_snapshot,
+            )
         session = SESSION_STORE.create(
             video=video,
             transcript_hash=getattr(indexed, "transcript_hash", video.video_id),

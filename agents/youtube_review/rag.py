@@ -116,7 +116,7 @@ async def _embed_texts(
             await close_async_resource(runtime_client)
 
 
-async def _ensure_pinecone_index(settings: Settings):
+async def _get_pinecone_index(settings: Settings, *, create_if_missing: bool = True):
     if not settings.ENABLE_PINECONE or not settings.PINECONE_API_KEY or Pinecone is None or ServerlessSpec is None:
         return None
 
@@ -124,6 +124,8 @@ async def _ensure_pinecone_index(settings: Settings):
     index_list = pc.list_indexes()
     index_names = [item["name"] for item in index_list]
     if settings.PINECONE_INDEX_NAME not in index_names:
+        if not create_if_missing:
+            return None
         pc.create_index(
             name=settings.PINECONE_INDEX_NAME,
             dimension=settings.OPENAI_EMBEDDING_DIMENSIONS,
@@ -141,6 +143,22 @@ async def _ensure_pinecone_index(settings: Settings):
                     )
                 break
     return pc.Index(settings.PINECONE_INDEX_NAME)
+
+
+async def clear_transcript_index(*, video_id: str, settings: Settings) -> bool:
+    """Remove transcript chunks for a prior session from memory and Pinecone."""
+    namespace = transcript_namespace(video_id)
+    cleared = _MEMORY_INDEX.pop(namespace, None) is not None
+
+    pinecone_index = await _get_pinecone_index(settings, create_if_missing=False)
+    if pinecone_index is None:
+        return cleared
+
+    try:
+        pinecone_index.delete(namespace=namespace, delete_all=True)
+        return True
+    except Exception:
+        return cleared
 
 
 async def index_transcript(
@@ -165,7 +183,7 @@ async def index_transcript(
     embeddings = await _embed_texts([chunk.text for chunk in chunks], settings, client=client)
     backend = "memory"
 
-    pinecone_index = await _ensure_pinecone_index(settings)
+    pinecone_index = await _get_pinecone_index(settings)
     if pinecone_index is not None and chunks and all(embedding for embedding in embeddings):
         vectors = [
             {

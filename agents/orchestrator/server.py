@@ -70,6 +70,12 @@ class QueryRequest(BaseModel):
         max_length=1000,
         examples=["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
     )
+    session_id: str | None = Field(
+        default=None,
+        description="Optional session identifier used when refreshing an existing video transcript session",
+        min_length=1,
+        max_length=200,
+    )
     chat_message: str | None = Field(
         default=None,
         description="Optional follow-up question to answer from transcript evidence",
@@ -201,6 +207,7 @@ async def query_endpoint(request: QueryRequest):
             user_query=effective_query,
             settings=settings,
             youtube_url=request.youtube_url,
+            session_id=request.session_id,
             chat_message=request.chat_message,
             find_similar_products=request.find_similar_products,
         )

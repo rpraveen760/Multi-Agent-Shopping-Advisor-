@@ -1434,6 +1434,8 @@
           return;
         }
 
+        const priorSessionId = state.sessionId || (state.result && state.result.session_id) || null;
+
         elements.queryInput.value = submittedQuery;
         state.loading = true;
         state.elapsed = 0;
@@ -1454,6 +1456,7 @@
           const payload = isYouTubeUrl(submittedQuery)
             ? {
                 youtube_url: submittedQuery,
+                session_id: priorSessionId,
                 chat_message: elements.chatInput.value.trim() || null,
                 find_similar_products: Boolean(elements.similarToggle.checked),
               }

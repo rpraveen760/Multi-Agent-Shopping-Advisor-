@@ -21,6 +21,7 @@ def build_video_analysis_payload(
     find_similar_products: bool = False,
     product_mcp_url: str | None = None,
     legacy_query: str | None = None,
+    session_id: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     request = YouTubeVideoRequest(
         youtube_url=youtube_url,
@@ -28,6 +29,7 @@ def build_video_analysis_payload(
         find_similar_products=find_similar_products,
         product_mcp_url=product_mcp_url,
         legacy_query=legacy_query,
+        session_id=session_id,
     )
     return request.model_dump_json(indent=2), {"product_mcp_url": product_mcp_url or ""}
 

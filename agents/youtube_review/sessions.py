@@ -48,6 +48,10 @@ class VideoSessionStore:
         with self._lock:
             return self._sessions.get(session_id)
 
+    def pop(self, session_id: str) -> VideoChatSession | None:
+        with self._lock:
+            return self._sessions.pop(session_id, None)
+
     def append_turn(self, session_id: str, *, role: str, content: str) -> VideoChatSession | None:
         with self._lock:
             session = self._sessions.get(session_id)
@@ -66,4 +70,3 @@ class VideoSessionStore:
 
 
 SESSION_STORE = VideoSessionStore()
-

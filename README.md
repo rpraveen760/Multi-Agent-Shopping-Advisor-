@@ -224,3 +224,45 @@ Common local URLs:
 
 - `GET http://localhost:8000/`
 - `GET http://localhost:8000/status`
+
+## Project Structure
+
+```text
+federated-multi-agent-system/
+|-- run.py
+|-- README.md
+|-- requirements.txt
+|-- .env.example
+|-- common/
+|   |-- config.py
+|   |-- a2a_models.py
+|   |-- a2a_server.py
+|   |-- a2a_client.py
+|   `-- runtime_helpers.py
+|-- agents/
+|   |-- youtube_review/
+|   |   |-- agent.py
+|   |   |-- video_analysis.py
+|   |   |-- rag.py
+|   |   |-- sessions.py
+|   |   `-- server.py
+|   |-- product_discovery/
+|   |   |-- agent.py
+|   |   |-- catalog.py
+|   |   |-- mcp_server.py
+|   |   |-- pipeline.py
+|   |   |-- traces.py
+|   |   `-- server.py
+|   `-- orchestrator/
+|       |-- discovery.py
+|       |-- routing.py
+|       |-- graph.py
+|       |-- product_runtime.py
+|       |-- review_runtime.py
+|       |-- video_runtime.py
+|       |-- runtime.py
+|       |-- synthesis_runtime.py
+|       `-- server.py
+`-- frontend/
+    `-- index.html
+```

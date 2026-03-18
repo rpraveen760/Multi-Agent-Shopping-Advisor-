@@ -134,9 +134,12 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("curl.exe", readme)
         self.assertIn("../ARCHITECTURE.md", readme)
         self.assertIn("python scripts/test_mcp_stdio.py list", readme)
+        self.assertIn("YouTube product review URL", readme)
+        self.assertIn("/video/chat", readme)
         self.assertIn('"sources"', readme)
         self.assertIn("http://localhost:8000/", readme)
         self.assertIn("GET http://localhost:8000/status", readme)
+        self.assertNotIn("Live Trace", readme)
         self.assertNotIn("cp .env.example .env", readme)
 
     def test_env_example_has_clear_required_placeholders(self):

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from agents.orchestrator import server
-from common.a2a_models import Artifact, Task, TaskStatus, TextPart, make_agent_message
+from common.a2a_models import Artifact, Task, TaskStatus, TextPart, UnifiedResponse, make_agent_message
 
 
 class _FakeClient:
@@ -40,9 +40,47 @@ class FrontendIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("cdnjs", response.text)
         self.assertNotIn("http://localhost:8000", response.text)
+        self.assertNotIn("Live Trace", response.text)
+        self.assertIn("Paste a YouTube review URL or enter a shopping query", response.text)
         self.assertIn('fetch("/query"', response.text)
         self.assertIn('fetch("/video/chat"', response.text)
         self.assertIn('fetch("/status"', response.text)
+
+    def test_query_endpoint_accepts_video_session_refresh_input(self):
+        fake_result = UnifiedResponse(
+            query="https://www.youtube.com/watch?v=abc123",
+            recommendations=[],
+            sources=[],
+            mode="youtube_video",
+            partial=False,
+            notes=None,
+            youtube_url="https://www.youtube.com/watch?v=abc123",
+            session_id="session-123",
+            video=None,
+            transcript_status="indexed",
+            indexing_status="indexed",
+            extracted_product=None,
+            chat_response=None,
+            similar_products=None,
+        )
+
+        with patch(
+            "agents.orchestrator.server.run_query",
+            new=AsyncMock(return_value=fake_result),
+        ) as run_query_mock:
+            response = self.client.post(
+                "/query",
+                json={
+                    "youtube_url": "https://www.youtube.com/watch?v=abc123",
+                    "session_id": "session-123",
+                    "chat_message": "What stands out?",
+                    "find_similar_products": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["session_id"], "session-123")
+        self.assertEqual(run_query_mock.await_args.kwargs["session_id"], "session-123")
 
     def test_video_chat_endpoint_delegates_over_a2a(self):
         youtube_card = SimpleNamespace(

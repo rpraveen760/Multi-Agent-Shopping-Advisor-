@@ -60,6 +60,7 @@ class OrchestratorState(TypedDict, total=False):
 
     query: str
     youtube_url: str | None
+    session_id: str | None
     chat_message: str | None
     find_similar_products: bool
     settings: Settings
@@ -227,6 +228,7 @@ async def execute_youtube_video_analysis(state: OrchestratorState) -> dict[str, 
         errors.append(f"Unable to resolve Product Discovery MCP interface: {exc}")
     payload, metadata = build_video_analysis_payload(
         youtube_url=youtube_url,
+        session_id=state.get("session_id"),
         chat_message=state.get("chat_message"),
         find_similar_products=state.get("find_similar_products", False),
         product_mcp_url=product_mcp_url,
@@ -504,6 +506,7 @@ async def run_query(
     a2a_client: A2AClient | None = None,
     llm_client: AsyncOpenAI | None = None,
     youtube_url: str | None = None,
+    session_id: str | None = None,
     chat_message: str | None = None,
     find_similar_products: bool = False,
 ) -> UnifiedResponse:
@@ -518,6 +521,7 @@ async def run_query(
         initial_state: OrchestratorState = {
             "query": user_query,
             "youtube_url": youtube_url,
+            "session_id": session_id,
             "chat_message": chat_message,
             "find_similar_products": find_similar_products,
             "settings": settings,
