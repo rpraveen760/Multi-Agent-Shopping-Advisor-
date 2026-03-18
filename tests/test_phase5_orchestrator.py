@@ -658,6 +658,48 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["review_results"], {})
         fake_client.send_message.assert_not_called()
 
+    async def test_execute_youtube_reviews_reports_nonempty_failure_detail(self):
+        fake_client = SimpleNamespace(
+            send_message=AsyncMock(side_effect=RuntimeError()),
+            get_task=AsyncMock(),
+        )
+        state = {
+            "query": "gaming mouse",
+            "settings": SimpleNamespace(
+                YOUTUBE_REVIEW_CONCURRENCY=2,
+                A2A_CLIENT_TIMEOUT_SECONDS=1,
+            ),
+            "routing_decision": SimpleNamespace(
+                needs_youtube_reviews=True,
+                routes=[
+                    SimpleNamespace(
+                        agent_name="youtube-review",
+                        agent_url="http://localhost:5001/a2a/v1",
+                    )
+                ],
+            ),
+            "product_result": ProductDiscoveryResult(
+                query="gaming mouse",
+                products=[
+                    Product(
+                        name="Razer Viper V3 Pro",
+                        url="https://merchant.example/razer-viper-v3-pro",
+                        source="Example Merchant",
+                        confidence=0.95,
+                        evidence_urls=["https://merchant.example/razer-viper-v3-pro"],
+                    )
+                ],
+                summary="One concrete gaming mouse.",
+            ),
+            "a2a_client": fake_client,
+            "errors": [],
+        }
+
+        result = await orchestrator_graph.execute_youtube_reviews(state)
+
+        self.assertEqual(result["review_results"], {})
+        self.assertIn("RuntimeError", result["errors"][0])
+
     def test_should_fetch_reviews_skips_when_no_finalized_products(self):
         state = {
             "routing_decision": SimpleNamespace(needs_youtube_reviews=True),

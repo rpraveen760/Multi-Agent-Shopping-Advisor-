@@ -357,6 +357,19 @@ class ProductDiscoveryAgentTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_extract_candidate_entity_name_prefers_real_product_over_roundup_label(self):
+        candidate = {
+            "title": "The Best Gaming Mouse of 2026: Mice Reviews - RTINGS.com",
+            "snippet": "The Razer Viper V3 Pro is the best gaming mouse we've tested.",
+            "enriched_title": "The Best Gaming Mouse of 2026: Mice Reviews - RTINGS.com",
+            "url": "https://www.rtings.com/mouse/reviews/best/by-usage/gaming",
+        }
+
+        self.assertEqual(
+            product_agent._extract_candidate_entity_name(candidate),
+            "Razer Viper V3 Pro",
+        )
+
     async def test_normalize_products_accepts_real_products_from_editorial_evidence(self):
         settings = SimpleNamespace(OPENAI_API_KEY="oa-key", OPENAI_MODEL="gpt-4o-mini")
         candidates = [
@@ -415,7 +428,11 @@ class ProductDiscoveryAgentTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 self.chat = SimpleNamespace(completions=FakeCompletions())
 
-        with patch.object(product_agent, "AsyncOpenAI", FakeClient):
+        with patch.object(product_agent, "AsyncOpenAI", FakeClient), patch.object(
+            product_agent,
+            "_resolve_product_detail_candidates",
+            new=AsyncMock(return_value=[]),
+        ):
             result, debug = await product_agent._normalize_products_with_debug(
                 "best gaming mouse",
                 candidates,
@@ -429,6 +446,77 @@ class ProductDiscoveryAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             any("grounded evidence page" in item["reasons"] for item in debug["shortlist_reasons"])
+        )
+
+    async def test_normalize_products_upgrades_to_resolved_detail_page_when_available(self):
+        settings = SimpleNamespace(OPENAI_API_KEY="oa-key", OPENAI_MODEL="gpt-4o-mini")
+        candidates = [
+            {
+                "title": "The Best Gaming Mouse of 2026",
+                "snippet": "The Razer Viper V3 Pro is the best gaming mouse we've tested.",
+                "enriched_title": "The Best Gaming Mouse of 2026: Mice Reviews - RTINGS.com",
+                "url": "https://www.rtings.com/mouse/reviews/best/by-usage/gaming",
+                "merchant": "rtings.com",
+                "candidate_entity": "Razer Viper V3 Pro",
+                "shortlist_score": 3.9,
+                "shortlist_reasons": ["specific product entity", "cross-source entity support"],
+            }
+        ]
+        resolved_detail_candidates = [
+            {
+                "title": "Razer Viper V3 Pro",
+                "snippet": "Buy the Razer Viper V3 Pro today",
+                "enriched_title": "Razer Viper V3 Pro product page",
+                "url": "https://merchant.example/products/razer-viper-v3-pro",
+                "merchant": "Example Merchant",
+                "candidate_entity": "Razer Viper V3 Pro",
+                "extracted_price": "$159.99",
+            }
+        ]
+        payload = {
+            "products": [
+                {
+                    "name": "Razer Viper V3 Pro",
+                    "price": "$159.99",
+                    "rating": None,
+                    "url": "https://hallucinated.example/viper-v3-pro",
+                    "key_features": ["Lightweight", "Pro-grade sensor"],
+                    "source": "RTINGS",
+                    "confidence": 0.9,
+                }
+            ],
+            "summary": "One concrete gaming mouse.",
+        }
+
+        class FakeCompletions:
+            async def create(self, **kwargs):
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+                )
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        with patch.object(product_agent, "AsyncOpenAI", FakeClient), patch.object(
+            product_agent,
+            "_resolve_product_detail_candidates",
+            new=AsyncMock(return_value=resolved_detail_candidates),
+        ):
+            result, debug = await product_agent._normalize_products_with_debug(
+                "best gaming mouse",
+                candidates,
+                settings,
+                3,
+            )
+
+        self.assertEqual(
+            result.products[0].url,
+            "https://merchant.example/products/razer-viper-v3-pro",
+        )
+        self.assertEqual(result.products[0].source, "Example Merchant")
+        self.assertTrue(
+            any("resolved product detail page" in item["reasons"] for item in debug["shortlist_reasons"])
         )
 
     def test_filter_candidates_prioritizes_concrete_product_pages(self):

@@ -37,6 +37,7 @@ ENRICH_TIMEOUT = 8  # seconds per page fetch
 FINAL_MAX_PRODUCTS = 3
 FILTERED_CANDIDATE_LIMIT = 6
 SHORTLIST_SCORE_THRESHOLD = 2.3
+DETAIL_SEARCH_MAX_RESULTS = 6
 
 _GENERIC_PRODUCT_NAME_TOKENS = {
     "best",
@@ -77,6 +78,29 @@ _GENERIC_PRODUCT_NAME_TOKENS = {
     "buy",
     "pick",
     "picks",
+}
+
+_GENERIC_ENTITY_LABEL_TOKENS = _GENERIC_PRODUCT_NAME_TOKENS | {
+    "the",
+    "a",
+    "an",
+    "our",
+    "ours",
+    "weve",
+    "tested",
+    "reviewed",
+    "expert",
+    "experts",
+    "winner",
+    "winners",
+    "standout",
+    "online",
+    "india",
+    "every",
+    "style",
+    "styles",
+    "latest",
+    "new",
 }
 
 _MERCHANT_DOMAINS = {
@@ -129,6 +153,9 @@ _TITLE_SPLIT_PATTERN = re.compile(r"\s[\-|–—:]\s|\|")
 _TRAILING_CONTEXT_PATTERN = re.compile(
     r"\b(?:review|reviews|price|prices|buy|guide|comparison|compare|vs|deal|deals|sale|top picks?|best)\b.*$",
     re.IGNORECASE,
+)
+_ENTITY_PHRASE_PATTERN = re.compile(
+    r"\b([A-Z][A-Za-z0-9&+./-]*(?:\s+[A-Z0-9][A-Za-z0-9&+./-]*){1,5})\b"
 )
 
 PRODUCT_SCHEMA = {
@@ -235,6 +262,27 @@ def _build_search_queries(query: str) -> list[str]:
         deduped.append(normalized)
 
     return deduped[:3]
+
+
+def _build_detail_search_queries(product_name: str) -> list[str]:
+    """Build exact-product follow-up queries for link grounding."""
+    cleaned = " ".join(product_name.split())
+    queries = [
+        f"\"{cleaned}\" product",
+        f"\"{cleaned}\" buy",
+        f"\"{cleaned}\" price",
+    ]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in queries:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    return deduped
 
 
 def _candidate_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -682,29 +730,125 @@ def _query_is_concrete_lookup(query: str) -> bool:
 
 def _extract_candidate_entity_name(candidate: dict[str, Any]) -> str:
     raw_title = candidate.get("enriched_title") or candidate.get("title") or ""
+    blocked_tokens = _build_blocked_entity_tokens(candidate)
+    blocked_phrases = _build_blocked_entity_phrases(candidate)
+
+    best_phrase = ""
+    best_score = -1.0
+    seen_phrases: set[str] = set()
+
+    for text in (
+        candidate.get("snippet", ""),
+        candidate.get("title", ""),
+        candidate.get("enriched_title", ""),
+    ):
+        for match in _ENTITY_PHRASE_PATTERN.finditer(text or ""):
+            phrase = _clean_entity_phrase(match.group(1))
+            normalized = _normalize_text(phrase)
+            if not normalized or normalized in seen_phrases:
+                continue
+            seen_phrases.add(normalized)
+            score = _score_entity_phrase(
+                phrase,
+                candidate,
+                blocked_tokens=blocked_tokens,
+                blocked_phrases=blocked_phrases,
+            )
+            if score > best_score:
+                best_phrase = phrase
+                best_score = score
+
+    if best_phrase:
+        return best_phrase
+
     segments = [segment.strip(" -|:") for segment in _TITLE_SPLIT_PATTERN.split(raw_title) if segment.strip()]
     if not segments:
         segments = [raw_title.strip()]
 
-    best_segment = ""
-    best_score = -1
     for segment in segments:
-        cleaned = _TRAILING_CONTEXT_PATTERN.sub("", segment).strip(" -|:")
+        cleaned = _clean_entity_phrase(segment)
         if not cleaned:
             continue
-
-        normalized = _normalize_text(cleaned)
-        tokens = [
-            token
-            for token in normalized.split()
-            if token and token not in _GENERIC_PRODUCT_NAME_TOKENS and not token.isdigit()
-        ]
-        score = len(tokens) + (2 if _has_model_signal(cleaned) else 0)
+        score = _score_entity_phrase(
+            cleaned,
+            candidate,
+            blocked_tokens=blocked_tokens,
+            blocked_phrases=blocked_phrases,
+        )
         if score > best_score:
-            best_segment = cleaned
+            best_phrase = cleaned
             best_score = score
 
-    return best_segment or raw_title.strip()
+    return best_phrase
+
+
+def _build_blocked_entity_tokens(candidate: dict[str, Any]) -> set[str]:
+    blocked = set(_GENERIC_ENTITY_LABEL_TOKENS)
+    domain = _extract_domain(candidate.get("url", ""))
+    blocked.update(
+        token
+        for token in _normalize_text(domain).split()
+        if token and token not in {"www", "com", "co", "in", "net", "org"}
+    )
+    return blocked
+
+
+def _build_blocked_entity_phrases(candidate: dict[str, Any]) -> set[str]:
+    raw_title = candidate.get("enriched_title") or candidate.get("title") or ""
+    segments = [segment.strip(" -|:") for segment in _TITLE_SPLIT_PATTERN.split(raw_title) if segment.strip()]
+    blocked: set[str] = set()
+    if len(segments) > 1:
+        tail = _normalize_text(segments[-1])
+        if tail and len(tail.split()) <= 3 and not _has_model_signal(segments[-1]):
+            blocked.add(tail)
+    domain = _normalize_text(_extract_domain(candidate.get("url", "")))
+    if domain:
+        blocked.add(domain)
+    return blocked
+
+
+def _clean_entity_phrase(value: str) -> str:
+    cleaned = value.strip(" -|:,.()[]{}")
+    cleaned = re.sub(r"^(?:the|our)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = _TRAILING_CONTEXT_PATTERN.sub("", cleaned).strip(" -|:,.()[]{}")
+    return cleaned
+
+
+def _score_entity_phrase(
+    phrase: str,
+    candidate: dict[str, Any],
+    *,
+    blocked_tokens: set[str],
+    blocked_phrases: set[str],
+) -> float:
+    normalized = _normalize_text(phrase)
+    if not normalized or normalized in blocked_phrases:
+        return -1.0
+
+    raw_tokens = [token for token in normalized.split() if token]
+    meaningful_tokens = [
+        token for token in raw_tokens if token not in blocked_tokens and not token.isdigit()
+    ]
+    if len(meaningful_tokens) < 2 and not _has_model_signal(phrase):
+        return -1.0
+
+    if all(token in blocked_tokens or token.isdigit() for token in raw_tokens):
+        return -1.0
+
+    score = float(len(meaningful_tokens))
+    if _has_model_signal(phrase):
+        score += 2.0
+
+    snippet_text = _normalize_text(candidate.get("snippet", ""))
+    title_text = _normalize_text(
+        f"{candidate.get('title', '')} {candidate.get('enriched_title', '')}"
+    )
+    if normalized in snippet_text:
+        score += 1.0
+    elif normalized in title_text:
+        score += 0.5
+
+    return score
 
 
 def _build_candidate_entities(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -850,6 +994,42 @@ def _is_product_detail_candidate(candidate: dict[str, Any]) -> bool:
         and candidate.get("candidate_entity")
         and len(_normalize_text(candidate.get("candidate_entity", "")).split()) >= 2
     )
+
+
+def _score_evidence_candidate(product_name: str, candidate: dict[str, Any]) -> float:
+    normalized_name = _normalize_text(product_name)
+    candidate_entity = _normalize_text(candidate.get("candidate_entity", ""))
+    title_text = _normalize_text(
+        f"{candidate.get('title', '')} {candidate.get('enriched_title', '')}"
+    )
+    text = _candidate_text(candidate)
+    merchant = _normalize_text(candidate.get("merchant") or _extract_domain(candidate.get("url", "")))
+
+    score = 0.0
+    if candidate_entity and candidate_entity == normalized_name:
+        score += 3.0
+    elif normalized_name and normalized_name in text:
+        score += 2.0
+
+    if _is_product_detail_candidate(candidate):
+        score += 3.0
+    elif _has_product_page_signal(candidate):
+        score += 1.5
+
+    if candidate.get("extracted_price"):
+        score += 0.8
+    if candidate.get("extracted_rating"):
+        score += 0.3
+    if any(domain in merchant for domain in _MERCHANT_DOMAINS):
+        score += 0.8
+    if len(candidate.get("matched_queries", [])) > 1:
+        score += 0.2
+    if _is_editorial_candidate(candidate):
+        score -= 0.8
+    if normalized_name and normalized_name in title_text:
+        score += 0.5
+
+    return score
 
 
 def _has_strong_product_signal(query: str, candidate: dict[str, Any], entity_support: int) -> bool:
@@ -1083,6 +1263,20 @@ async def _normalize_products_with_debug(
                 continue
 
             evidence_candidates = _find_evidence_candidates(product_name, candidates)
+            resolved_detail_candidates: list[dict[str, Any]] = []
+            if not any(_is_product_detail_candidate(candidate) for candidate in evidence_candidates):
+                resolved_detail_candidates = await _resolve_product_detail_candidates(product_name)
+
+            combined_candidates = list(candidates)
+            for candidate in resolved_detail_candidates:
+                url = _canonicalize_candidate_url(candidate.get("url"))
+                if not url:
+                    continue
+                if any(_canonicalize_candidate_url(existing.get("url")) == url for existing in combined_candidates):
+                    continue
+                combined_candidates.append(candidate)
+
+            evidence_candidates = _find_evidence_candidates(product_name, combined_candidates)
             canonical_candidate = _select_canonical_evidence_candidate(
                 p.get("url"),
                 evidence_candidates,
@@ -1095,7 +1289,7 @@ async def _normalize_products_with_debug(
                 continue
 
             grounded_url = _canonicalize_candidate_url(canonical_candidate.get("url"))
-            evidence_urls = _find_evidence_urls(product_name, candidates)
+            evidence_urls = _find_evidence_urls(product_name, combined_candidates)
             if grounded_url and grounded_url not in evidence_urls:
                 evidence_urls = [grounded_url, *evidence_urls][:3]
             if not grounded_url:
@@ -1103,11 +1297,13 @@ async def _normalize_products_with_debug(
 
             product_shortlist_reasons = _build_product_shortlist_reasons(
                 product_name,
-                candidates,
+                combined_candidates,
                 evidence_urls,
             )
             grounding_reason = (
-                "grounded product detail page"
+                "resolved product detail page"
+                if resolved_detail_candidates and _is_product_detail_candidate(canonical_candidate)
+                else "grounded product detail page"
                 if _is_product_detail_candidate(canonical_candidate)
                 else "grounded evidence page"
             )
@@ -1128,7 +1324,7 @@ async def _normalize_products_with_debug(
                     rating=p.get("rating"),
                     url=grounded_url,
                     key_features=p.get("key_features", [])[:3],
-                    source=p.get("source", "unknown"),
+                    source=canonical_candidate.get("merchant") or p.get("source", "unknown"),
                     evidence_urls=evidence_urls,
                     confidence=p.get("confidence", 0.0),
                 )
@@ -1183,9 +1379,14 @@ def _build_product_shortlist_reasons(
     evidence_urls: list[str],
 ) -> list[str]:
     reasons: list[str] = []
+    evidence_url_set = {
+        _canonicalize_candidate_url(url)
+        for url in evidence_urls
+        if _canonicalize_candidate_url(url)
+    }
 
     for candidate in candidates:
-        if candidate.get("url") not in evidence_urls:
+        if _canonicalize_candidate_url(candidate.get("url")) not in evidence_url_set:
             continue
         for reason in candidate.get("shortlist_reasons", []):
             if reason not in reasons:
@@ -1241,8 +1442,7 @@ def _find_evidence_candidates(product_name: str, candidates: list[dict]) -> list
     return sorted(
         matched,
         key=lambda item: (
-            not _is_product_detail_candidate(item),
-            -(item.get("shortlist_score") or 0.0),
+            -_score_evidence_candidate(product_name, item),
             -len(item.get("matched_queries", [])),
             item.get("url", ""),
         ),
@@ -1282,3 +1482,80 @@ def _find_evidence_urls(product_name: str, candidates: list[dict]) -> list[str]:
         if url and url not in urls:
             urls.append(url)
     return urls[:3]
+
+
+def _search_product_detail_candidates(product_name: str) -> list[dict[str, Any]]:
+    """Search for grounded detail pages for an already-known product."""
+    search_queries = _build_detail_search_queries(product_name)
+    logger.info("Detail grounding queries for %s: %s", product_name, search_queries)
+
+    try:
+        with DDGS() as ddgs:
+            candidates: list[dict[str, Any]] = []
+            seen_urls: set[str] = set()
+            per_query_limit = max(2, DETAIL_SEARCH_MAX_RESULTS // max(len(search_queries), 1))
+
+            for search_query in search_queries:
+                results = list(ddgs.text(search_query, max_results=per_query_limit))
+                for row in results:
+                    url = _canonicalize_candidate_url(row.get("href", ""))
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    candidates.append(
+                        {
+                            "title": row.get("title", ""),
+                            "snippet": row.get("body", ""),
+                            "url": url,
+                            "matched_query": search_query,
+                            "matched_queries": [search_query],
+                            "candidate_entity": product_name,
+                        }
+                    )
+                    if len(candidates) >= DETAIL_SEARCH_MAX_RESULTS:
+                        return candidates
+    except Exception as exc:
+        logger.info(
+            "Detail grounding search failed for %s: %s",
+            product_name,
+            type(exc).__name__,
+        )
+        return []
+
+    return candidates
+
+
+async def _resolve_product_detail_candidates(product_name: str) -> list[dict[str, Any]]:
+    """Run a second-pass exact-product search to improve product-link grounding."""
+    raw_candidates = await asyncio.to_thread(_search_product_detail_candidates, product_name)
+    if not raw_candidates:
+        return []
+
+    enriched = await _enrich_candidates(raw_candidates[:DETAIL_SEARCH_MAX_RESULTS])
+    for candidate in enriched:
+        candidate["candidate_entity"] = candidate.get("candidate_entity") or product_name
+        candidate["shortlist_score"] = round(_score_evidence_candidate(product_name, candidate), 2)
+        candidate["shortlist_reasons"] = list(
+            dict.fromkeys(
+                [
+                    reason
+                    for reason, condition in (
+                        ("resolved detail search", True),
+                        ("product page cues", _has_product_page_signal(candidate)),
+                        (
+                            "merchant domain",
+                            any(
+                                domain in _normalize_text(
+                                    candidate.get("merchant") or _extract_domain(candidate.get("url", ""))
+                                )
+                                for domain in _MERCHANT_DOMAINS
+                            ),
+                        ),
+                        ("price detected", bool(candidate.get("extracted_price"))),
+                    )
+                    if condition
+                ]
+            )
+        )
+
+    return [candidate for candidate in _find_evidence_candidates(product_name, enriched) if _canonicalize_candidate_url(candidate.get("url"))]

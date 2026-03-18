@@ -651,9 +651,19 @@ async def execute_youtube_reviews(state: OrchestratorState) -> dict[str, Any]:
                             )
                         return (product_name, summary, None)
 
+                    task_message = _task_status_text(result)
+                    if task_message:
+                        return (product_name, None, task_message)
+                    return (
+                        product_name,
+                        None,
+                        f"YouTube review {result.status.state} for {product_name} without a structured summary.",
+                    )
+
                 return (product_name, None, f"No parseable review data for {product_name}")
             except (A2AError, Exception) as exc:
-                return (product_name, None, f"YouTube review failed for {product_name}: {exc}")
+                detail = _format_exception_detail(exc)
+                return (product_name, None, f"YouTube review failed for {product_name}: {detail}")
 
     tasks = [_fetch_review(name) for name in product_names]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -834,6 +844,16 @@ def _task_status_text(task: Task) -> str | None:
         return None
 
     return " ".join(parts)
+
+
+def _format_exception_detail(exc: Exception) -> str:
+    text = str(exc).strip()
+    exc_name = type(exc).__name__
+    if not text:
+        return exc_name
+    if text.startswith(exc_name):
+        return text
+    return f"{exc_name}: {text}"
 
 
 def _task_signature(task: Task) -> tuple[str, str, str]:
