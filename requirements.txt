@@ -13,3 +13,4 @@ pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 google-api-python-client>=2.100.0
 beautifulsoup4>=4.12.0
+pinecone>=5.0.0

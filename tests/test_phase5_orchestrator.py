@@ -52,7 +52,6 @@ if "langgraph.graph" not in sys.modules:
 
 from agents.orchestrator import graph as orchestrator_graph
 from agents.orchestrator.routing import QueryUnderstanding, route_query
-from agents.orchestrator.trace import TraceRecorder, TraceStore
 from common.a2a_models import AgentCard, AgentCardInterface
 from common.a2a_models import (
     Artifact,
@@ -63,12 +62,114 @@ from common.a2a_models import (
     TaskStatus,
     TextPart,
     UnifiedResponse,
+    UnifiedVideoAnalysisResponse,
     VideoSource,
+    VideoMetadata,
     make_agent_message,
 )
 
 
 class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_youtube_video_analysis_passes_product_mcp_url(self):
+        video_result = UnifiedVideoAnalysisResponse(
+            youtube_url="https://www.youtube.com/watch?v=abc123",
+            video=VideoMetadata(
+                video_id="abc123",
+                video_url="https://www.youtube.com/watch?v=abc123",
+                title="Gaming Mouse Review",
+                channel="Tech Lab",
+                published_at="2026-03-01",
+                view_count="1000",
+            ),
+            transcript_status="indexed",
+            indexing_status="indexed",
+            summary="Transcript-grounded product analysis.",
+            partial=False,
+            notes=None,
+        )
+        task = Task(
+            status=TaskStatus(state="completed", message=make_agent_message("done")),
+            artifacts=[
+                Artifact(
+                    name="video-analysis-result",
+                    parts=[TextPart(text=video_result.model_dump_json())],
+                )
+            ],
+        )
+        fake_client = SimpleNamespace(send_message=AsyncMock(return_value=task), get_task=AsyncMock())
+        state = {
+            "query": "https://www.youtube.com/watch?v=abc123",
+            "youtube_url": "https://www.youtube.com/watch?v=abc123",
+            "chat_message": "What product is being reviewed?",
+            "find_similar_products": True,
+            "settings": SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
+            "routing_decision": SimpleNamespace(
+                routes=[
+                    SimpleNamespace(
+                        agent_name="youtube-review",
+                        agent_url="http://localhost:5001/a2a/v1",
+                    )
+                ]
+            ),
+            "discovered_agents": {
+                "product-discovery": AgentCard(
+                    name="Product Discovery Agent",
+                    description="Product agent",
+                    url="http://localhost:5002/a2a/v1",
+                    additionalInterfaces=[
+                        AgentCardInterface(url="http://localhost:5002/mcp", transport="MCP")
+                    ],
+                    skills=[],
+                )
+            },
+            "a2a_client": fake_client,
+            "errors": [],
+        }
+
+        result = await orchestrator_graph.execute_youtube_video_analysis(state)
+
+        self.assertEqual(result["video_analysis"].youtube_url, "https://www.youtube.com/watch?v=abc123")
+        fake_client.send_message.assert_awaited_once()
+        _, payload = fake_client.send_message.await_args.args[:2]
+        self.assertIn("\"youtube_url\": \"https://www.youtube.com/watch?v=abc123\"", payload)
+        self.assertEqual(
+            fake_client.send_message.await_args.kwargs["metadata"]["product_mcp_url"],
+            "http://localhost:5002/mcp",
+        )
+
+    async def test_synthesize_video_response_preserves_session_id(self):
+        video_result = UnifiedVideoAnalysisResponse(
+            youtube_url="https://www.youtube.com/watch?v=abc123",
+            session_id="session-123",
+            video=VideoMetadata(
+                video_id="abc123",
+                video_url="https://www.youtube.com/watch?v=abc123",
+                title="Gaming Mouse Review",
+                channel="Tech Lab",
+                published_at="2026-03-01",
+                view_count="1000",
+            ),
+            transcript_status="indexed",
+            indexing_status="indexed",
+            summary="Transcript-grounded product analysis.",
+            partial=False,
+            notes=None,
+        )
+
+        result = await orchestrator_graph.synthesize(
+            {
+                "query": video_result.youtube_url,
+                "settings": SimpleNamespace(OPENAI_MODEL="gpt-4o-mini", OPENAI_API_KEY="oa-key"),
+                "product_result": None,
+                "review_results": {},
+                "video_analysis": video_result,
+                "routing_decision": None,
+                "errors": [],
+            }
+        )
+
+        self.assertEqual(result["unified_response"].session_id, "session-123")
+
     async def test_route_query_enables_reviews_for_product_lookups(self):
         llm_response = SimpleNamespace(
             choices=[
@@ -272,79 +373,6 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_arguments["arguments"]["max_results"], 3)
         self.assertEqual(result.query, "best earbuds")
 
-    async def test_execute_product_discovery_uses_live_polled_trace_when_available(self):
-        product_result = ProductDiscoveryResult(
-            query="best earbuds",
-            products=[
-                Product(
-                    name="Sony WF-1000XM5",
-                    price="$99.99",
-                    rating="4.5/5",
-                    url="https://merchant.example/sony",
-                    key_features=["ANC"],
-                    source="Example Merchant",
-                    evidence_urls=["https://merchant.example/sony"],
-                    confidence=0.91,
-                )
-            ],
-            summary="One result",
-        )
-        trace_store = TraceStore()
-        run_snapshot = trace_store.create_run("best earbuds")
-        recorder = TraceRecorder(trace_store, run_snapshot.run_id)
-        live_trace = {
-            "query": "best earbuds",
-            "stage": "normalization-complete",
-            "normalized_products": [{"name": "Sony WF-1000XM5"}],
-        }
-        state = {
-            "settings": SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
-            "routing_decision": SimpleNamespace(
-                needs_product_discovery=True,
-                routes=[
-                    SimpleNamespace(
-                        agent_name="product-discovery",
-                        agent_url="http://localhost:5002/a2a/v1",
-                        query_text="best earbuds",
-                    )
-                ],
-            ),
-            "discovered_agents": {
-                "product-discovery": AgentCard(
-                    name="Product Discovery Agent",
-                    description="Product agent",
-                    url="http://localhost:5002/a2a/v1",
-                    additionalInterfaces=[
-                        AgentCardInterface(
-                            url="http://localhost:5002/mcp",
-                            transport="MCP",
-                        )
-                    ],
-                    skills=[],
-                )
-            },
-            "errors": [],
-            "trace_recorder": recorder,
-        }
-
-        with patch(
-            "agents.orchestrator.graph._call_product_discovery_via_mcp",
-            new=AsyncMock(return_value=product_result),
-        ), patch(
-            "agents.orchestrator.graph._poll_product_discovery_debug",
-            new=AsyncMock(return_value=live_trace),
-        ) as poll_mock, patch(
-            "agents.orchestrator.graph._clear_product_discovery_debug",
-            new=AsyncMock(),
-        ) as clear_mock:
-            result = await orchestrator_graph.execute_product_discovery(state)
-
-        snapshot = trace_store.get_run(run_snapshot.run_id)
-        self.assertIs(result["product_result"], product_result)
-        self.assertEqual(snapshot.product_trace, live_trace)
-        poll_mock.assert_awaited_once()
-        clear_mock.assert_awaited_once()
-
     async def test_execute_product_discovery_falls_back_to_a2a(self):
         product_result = ProductDiscoveryResult(
             query="best earbuds",
@@ -530,100 +558,6 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
             ["Wacom Cintiq 16", "Huion Kamvas 13", "XP-Pen Artist 13.3 Pro"],
         )
 
-    async def test_execute_youtube_reviews_records_shortlisted_targets_in_trace(self):
-        review_summary = ReviewSummary(
-            product_name="Wacom Cintiq 16",
-            overall_sentiment="positive",
-            score=8.9,
-            pros=["Great pen feel"],
-            cons=["Expensive"],
-            key_quotes=[],
-            recommendation="Strong drawing tablet.",
-            confidence=0.9,
-            sources=[],
-        )
-        review_task = Task(
-            status=TaskStatus(state="completed", message=make_agent_message("done")),
-            artifacts=[
-                Artifact(
-                    name="review-summary",
-                    parts=[TextPart(text=review_summary.model_dump_json())],
-                )
-            ],
-        )
-        fake_client = SimpleNamespace(
-            send_message=AsyncMock(return_value=review_task),
-            get_task=AsyncMock(),
-        )
-        trace_store = TraceStore()
-        run_snapshot = trace_store.create_run("best drawing tablet with screen")
-        recorder = TraceRecorder(trace_store, run_snapshot.run_id)
-        state = {
-            "query": "best drawing tablet with screen",
-            "settings": SimpleNamespace(
-                YOUTUBE_REVIEW_CONCURRENCY=2,
-                A2A_CLIENT_TIMEOUT_SECONDS=1,
-            ),
-            "routing_decision": SimpleNamespace(
-                needs_youtube_reviews=True,
-                routes=[
-                    SimpleNamespace(
-                        agent_name="youtube-review",
-                        agent_url="http://localhost:5001/a2a/v1",
-                    )
-                ],
-            ),
-            "product_result": ProductDiscoveryResult(
-                query="best drawing tablet with screen",
-                products=[
-                    Product(
-                        name="XP-Pen Artist 13.3 Pro",
-                        url="https://merchant.example/xppen",
-                        source="Example Merchant",
-                        confidence=0.85,
-                        evidence_urls=["https://merchant.example/xppen"],
-                    ),
-                    Product(
-                        name="Wacom Cintiq 16",
-                        url="https://merchant.example/wacom",
-                        source="Example Merchant",
-                        confidence=0.95,
-                        evidence_urls=["https://merchant.example/wacom", "https://reviews.example/wacom"],
-                    ),
-                    Product(
-                        name="Huion Kamvas 13",
-                        url="https://merchant.example/huion",
-                        source="Example Merchant",
-                        confidence=0.9,
-                        evidence_urls=["https://merchant.example/huion"],
-                    ),
-                    Product(
-                        name="Gaomon PD1161",
-                        url="https://merchant.example/gaomon",
-                        source="Example Merchant",
-                        confidence=0.8,
-                        evidence_urls=["https://merchant.example/gaomon"],
-                    ),
-                ],
-                summary="Concrete shortlist available.",
-            ),
-            "a2a_client": fake_client,
-            "trace_recorder": recorder,
-            "errors": [],
-        }
-
-        with patch(
-            "agents.orchestrator.graph._resolve_send_message_result",
-            new=AsyncMock(return_value=review_task),
-        ):
-            await orchestrator_graph.execute_youtube_reviews(state)
-
-        snapshot = trace_store.get_run(run_snapshot.run_id)
-        self.assertEqual(
-            snapshot.product_trace["review_targets"],
-            ["Wacom Cintiq 16", "Huion Kamvas 13", "XP-Pen Artist 13.3 Pro"],
-        )
-
     async def test_execute_youtube_reviews_skips_when_no_finalized_products(self):
         fake_client = SimpleNamespace(
             send_message=AsyncMock(),
@@ -711,27 +645,6 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         }
 
         self.assertEqual(orchestrator_graph._should_fetch_reviews(state), "synthesize")
-
-    def test_extract_named_debug_artifacts(self):
-        task = Task(
-            status=TaskStatus(state="working", message=make_agent_message("working")),
-            artifacts=[
-                Artifact(
-                    name="product-discovery-debug",
-                    parts=[TextPart(text='{"stage":"enrichment-complete","candidates":[{"url":"https://example.com"}]}')],
-                ),
-                Artifact(
-                    name="review-debug",
-                    parts=[TextPart(text='{"product_name":"Sony WF-1000XM5","stage":"summary-complete"}')],
-                ),
-            ],
-        )
-
-        product_trace = orchestrator_graph._extract_product_trace(task)
-        review_trace = orchestrator_graph._extract_review_trace(task)
-
-        self.assertEqual(product_trace["stage"], "enrichment-complete")
-        self.assertEqual(review_trace["product_name"], "Sony WF-1000XM5")
 
     def test_fallback_synthesis_supports_review_only_results(self):
         review_results = {

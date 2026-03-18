@@ -7,7 +7,6 @@ import json
 import logging
 from typing import Any, Awaitable, Callable
 
-from agents.orchestrator.trace import TraceRecorder
 from common.a2a_client import A2AClient
 from common.a2a_models import Message, Task
 from common.runtime_helpers import format_exception_detail
@@ -18,7 +17,6 @@ TERMINAL_TASK_STATES = {"completed", "failed", "canceled", "input-required"}
 TASK_POLL_INTERVAL_SECONDS = 0.25
 
 TaskObserver = Callable[[Task], None]
-ArtifactExtractor = Callable[[Task], dict[str, Any] | None]
 SleepFunc = Callable[[float], Awaitable[None]]
 
 
@@ -95,79 +93,19 @@ def task_status_text(task: Task) -> str | None:
 
 def task_signature(
     task: Task,
-    *,
-    product_trace_extractor: ArtifactExtractor | None = None,
-    review_trace_extractor: ArtifactExtractor | None = None,
 ) -> tuple[str, str, str]:
     """Build a compact signature so observers only react to meaningful changes."""
-    debug_payload = None
-    if product_trace_extractor is not None:
-        debug_payload = product_trace_extractor(task)
-    if not debug_payload and review_trace_extractor is not None:
-        debug_payload = review_trace_extractor(task)
-
-    debug_json = json.dumps(debug_payload, sort_keys=True) if debug_payload else ""
     return (
         task.status.state,
         task_status_text(task) or "",
-        debug_json,
-    )
-
-
-def map_task_state_to_event_status(task_state: str) -> str:
-    if task_state == "completed":
-        return "done"
-    if task_state == "failed":
-        return "error"
-    if task_state in {"working", "submitted"}:
-        return "active"
-    return "info"
-
-
-def record_agent_task_snapshot(
-    trace: TraceRecorder | None,
-    *,
-    agent_name: str,
-    task: Task,
-    product_name: str | None = None,
-    product_trace_extractor: ArtifactExtractor | None = None,
-    review_trace_extractor: ArtifactExtractor | None = None,
-) -> None:
-    """Record in-flight A2A task updates into the live trace store."""
-    if trace is None:
-        return
-
-    message = task_status_text(task)
-    if message:
-        title = "Product Discovery task update"
-        if agent_name == "youtube-review":
-            label = product_name or "review target"
-            title = f"YouTube review update for {label}"
-
-        trace.add_event(
-            title,
-            status=map_task_state_to_event_status(task.status.state),
-            detail=message,
-            agent=agent_name,
-            data={
-                "task_id": task.id,
-                "task_state": task.status.state,
-                "product_name": product_name,
+        json.dumps(
+            {
+                "artifacts": [artifact.name for artifact in task.artifacts or []],
+                "message": task_status_text(task) or "",
             },
-        )
-
-    if agent_name == "product-discovery":
-        payload = product_trace_extractor(task) if product_trace_extractor else None
-        if payload:
-            trace.set_product_trace(payload)
-        return
-
-    payload = review_trace_extractor(task) if review_trace_extractor else None
-    if payload:
-        trace.set_review_trace(
-            payload.get("product_name") or product_name or "unknown",
-            payload,
-        )
+            sort_keys=True,
+        ),
+    )
 
 
 __all__ = [
@@ -175,8 +113,6 @@ __all__ = [
     "TERMINAL_TASK_STATES",
     "extract_named_artifact_json",
     "format_exception_detail",
-    "map_task_state_to_event_status",
-    "record_agent_task_snapshot",
     "resolve_send_message_result",
     "task_signature",
     "task_status_text",

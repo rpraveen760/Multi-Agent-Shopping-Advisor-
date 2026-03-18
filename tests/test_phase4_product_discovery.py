@@ -811,40 +811,6 @@ class ProductDiscoveryAgentTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MCPServerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_call_tool_uses_debug_path_when_trace_id_present(self):
-        fake_result = SimpleNamespace(
-            products=[],
-            model_dump_json=lambda indent=2: '{"ok": true}',
-        )
-
-        async def fake_search_products_with_debug(**kwargs):
-            await kwargs["on_step"](
-                "search-complete",
-                "Collected candidates",
-                {"stage": "search-complete", "query": kwargs["query"], "candidates": []},
-            )
-            return fake_result, {"stage": "normalization-complete", "query": kwargs["query"]}
-
-        with patch("agents.product_discovery.mcp_server.get_settings", return_value=SimpleNamespace()), patch(
-            "agents.product_discovery.mcp_server.search_products_with_debug",
-            new=AsyncMock(side_effect=fake_search_products_with_debug),
-        ) as debug_mock, patch(
-            "agents.product_discovery.mcp_server.search_products",
-            new=AsyncMock(),
-        ) as search_mock, patch.object(
-            mcp_server.PROGRESS_STORE,
-            "publish",
-        ) as publish_mock:
-            result = await mcp_server.call_tool(
-                "search_products",
-                {"query": "best earbuds", "trace_id": "trace-123"},
-            )
-
-        debug_mock.assert_awaited_once()
-        search_mock.assert_not_called()
-        self.assertGreaterEqual(publish_mock.call_count, 2)
-        self.assertEqual(result[0].text, '{"ok": true}')
-
     async def test_call_tool_coerces_numeric_string_max_results(self):
         fake_result = SimpleNamespace(model_dump_json=lambda indent=2: '{"ok": true}')
 
@@ -867,6 +833,23 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 "search_products",
                 {"query": "best earbuds", "max_results": 0},
             )
+
+    async def test_call_tool_supports_structured_similar_product_lookup(self):
+        result = await mcp_server.call_tool(
+            "find_similar_products",
+            {
+                "product_name": "Razer Viper V3 Pro",
+                "category": "gaming mouse",
+                "features": ["wireless", "lightweight", "esports"],
+                "price": "$159.99",
+                "source_video_url": "https://www.youtube.com/watch?v=abc123",
+            },
+        )
+
+        payload = json.loads(result[0].text)
+        self.assertEqual(payload["request"]["product_name"], "Razer Viper V3 Pro")
+        self.assertGreaterEqual(len(payload["products"]), 1)
+        self.assertNotEqual(payload["products"][0]["name"], "Razer Viper V3 Pro")
 
 
 class MCPStdioHelperTests(unittest.TestCase):

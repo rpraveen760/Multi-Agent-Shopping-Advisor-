@@ -67,6 +67,7 @@ class A2AClient:
         agent_url: str,
         text: str,
         context_id: str | None = None,
+        metadata: dict | None = None,
     ) -> SendMessageResult:
         """Send a message to an agent via A2A SendMessage.
 
@@ -95,6 +96,9 @@ class A2AClient:
                 "message": message.model_dump(),
             },
         }
+
+        if metadata:
+            payload["params"]["metadata"] = metadata
 
         if context_id:
             payload["params"]["configuration"] = {"contextId": context_id}

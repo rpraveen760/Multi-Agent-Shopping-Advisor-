@@ -74,8 +74,20 @@ if "youtube_transcript_api" not in sys.modules:
 
 from agents.product_discovery import server as product_server
 from agents.youtube_review import agent as review_agent
+from agents.youtube_review import sessions as review_sessions
 from agents.youtube_review import server as review_server
-from common.a2a_models import Product, ProductDiscoveryResult, ReviewSummary
+from agents.youtube_review import video_analysis as video_analysis_agent
+from common.a2a_models import (
+    ExtractedProductDetails,
+    Product,
+    ProductDiscoveryResult,
+    ReviewSummary,
+    TranscriptChunk,
+    UnifiedVideoAnalysisResponse,
+    VideoMetadata,
+    VideoChatResponse,
+    YouTubeVideoRequest,
+)
 from common.a2a_server import InMemoryTaskStore, create_a2a_routes
 
 
@@ -98,25 +110,6 @@ class ProductDiscoveryServerTests(unittest.TestCase):
 
         self.assertEqual(len(mcp_interfaces), 1)
         self.assertEqual(mcp_interfaces[0].url, "http://localhost:5002/mcp")
-
-    def test_debug_progress_endpoint_returns_latest_snapshot(self):
-        client = TestClient(product_server.app)
-        trace_id = "trace-debug-1"
-        payload = {"stage": "search-complete", "query": "best earbuds"}
-
-        product_server.PROGRESS_STORE.publish(trace_id, payload)
-        try:
-            response = client.get(f"/debug/product-discovery/{trace_id}")
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["stage"], "search-complete")
-
-            cleared = client.delete(f"/debug/product-discovery/{trace_id}")
-            self.assertEqual(cleared.status_code, 200)
-
-            missing = client.get(f"/debug/product-discovery/{trace_id}")
-            self.assertEqual(missing.status_code, 404)
-        finally:
-            product_server.PROGRESS_STORE.clear(trace_id)
 
     def test_send_message_returns_discovery_artifact(self):
         client = TestClient(build_app(product_server.AGENT_CARD, product_server.handle_send_message))
@@ -168,6 +161,10 @@ class ProductDiscoveryServerTests(unittest.TestCase):
 
 
 class YouTubeReviewServerTests(unittest.TestCase):
+    def test_agent_card_advertises_video_analysis_skill(self):
+        skill_ids = [skill.id for skill in review_server.AGENT_CARD.skills]
+        self.assertIn("youtube-video-analysis", skill_ids)
+
     def test_get_task_reports_working_state_during_review_pipeline(self):
         ready = threading.Event()
         release = threading.Event()
@@ -252,6 +249,138 @@ class YouTubeReviewServerTests(unittest.TestCase):
                 final_payload["result"]["task"]["artifacts"][0]["metadata"]["schema"],
                 "ReviewSummary",
             )
+
+    def test_send_message_accepts_structured_youtube_url_request(self):
+        client = TestClient(build_app(review_server.AGENT_CARD, review_server.handle_send_message))
+        fake_result = UnifiedVideoAnalysisResponse(
+            youtube_url="https://www.youtube.com/watch?v=abc123",
+            video=VideoMetadata(
+                video_id="abc123",
+                video_url="https://www.youtube.com/watch?v=abc123",
+                title="Gaming Mouse Review",
+                channel="Tech Lab",
+                published_at="2026-03-01",
+                view_count="1000",
+            ),
+            transcript_status="indexed",
+            indexing_status="indexed",
+            summary="Transcript-grounded product analysis.",
+            partial=False,
+            notes=None,
+        )
+
+        with patch("agents.youtube_review.server.get_settings", return_value=SimpleNamespace()), patch(
+            "agents.youtube_review.server.analyze_video_review",
+            new=AsyncMock(return_value=(fake_result, {"stage": "completed", "youtube_url": fake_result.youtube_url})),
+        ):
+            response = client.post(
+                "/a2a/v1",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "video-1",
+                    "method": "SendMessage",
+                    "params": {
+                        "message": {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {
+                                            "youtube_url": fake_result.youtube_url,
+                                            "find_similar_products": True,
+                                        }
+                                    ),
+                                }
+                            ],
+                            "messageId": "msg-video-1",
+                        },
+                        "metadata": {"product_mcp_url": "http://localhost:5002/mcp"},
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["result"]["task"]["status"]["state"], "completed")
+        self.assertEqual(
+            payload["result"]["task"]["artifacts"][0]["metadata"]["schema"],
+            "UnifiedVideoAnalysisResponse",
+        )
+
+    def test_send_message_accepts_structured_transcript_chat_request(self):
+        client = TestClient(build_app(review_server.AGENT_CARD, review_server.handle_send_message))
+        fake_response = VideoChatResponse(
+            youtube_url="https://www.youtube.com/watch?v=abc123",
+            answer="The review recommends it for competitive gamers.",
+            citations=["Chunk 1: It is very light."],
+            confidence=0.82,
+            session_id="session-123",
+            history=[],
+        )
+
+        with patch("agents.youtube_review.server.get_settings", return_value=SimpleNamespace()), patch(
+            "agents.youtube_review.server.chat_with_video_session",
+            new=AsyncMock(return_value=(fake_response, {"stage": "chat-complete", "session_id": "session-123"})),
+        ):
+            response = client.post(
+                "/a2a/v1",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "video-chat-1",
+                    "method": "SendMessage",
+                    "params": {
+                        "message": {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        {
+                                            "session_id": "session-123",
+                                            "chat_message": "Should I buy it for esports?",
+                                        }
+                                    ),
+                                }
+                            ],
+                            "messageId": "msg-video-chat-1",
+                        }
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["result"]["task"]["status"]["state"], "completed")
+        self.assertEqual(
+            payload["result"]["task"]["artifacts"][0]["metadata"]["schema"],
+            "VideoChatResponse",
+        )
+
+    def test_readiness_endpoint_reports_degraded_after_runtime_issue(self):
+        client = TestClient(review_server.app)
+        review_server._READINESS_STATE["last_runtime_status"] = "degraded"
+        review_server._READINESS_STATE["last_runtime_issue"] = "IpBlocked"
+
+        try:
+            with patch(
+                "agents.youtube_review.server.get_settings",
+                return_value=SimpleNamespace(
+                    OPENAI_API_KEY="oa-key",
+                    YOUTUBE_API_KEY="yt-key",
+                    ENABLE_PINECONE=True,
+                    PINECONE_API_KEY="pc-key",
+                ),
+            ):
+                response = client.get("/readiness")
+        finally:
+            review_server._READINESS_STATE["last_runtime_status"] = "idle"
+            review_server._READINESS_STATE["last_runtime_issue"] = None
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "degraded")
+        self.assertIn("IpBlocked", payload["issues"][0])
 
 
 class YouTubeReviewAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -360,6 +489,211 @@ class YouTubeReviewAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.confidence, 0.0)
         self.assertIn("No transcript or description evidence", result.recommendation)
         self.assertEqual(len(result.sources), 1)
+
+    async def test_video_analysis_keeps_partial_result_when_similar_product_lookup_fails(self):
+        settings = SimpleNamespace(
+            YOUTUBE_API_KEY="yt-key",
+            OPENAI_API_KEY="oa-key",
+            OPENAI_MODEL="gpt-4o-mini",
+            OPENAI_EMBEDDING_MODEL="text-embedding-3-small",
+            OPENAI_EMBEDDING_DIMENSIONS=512,
+            ENABLE_PINECONE=False,
+            YOUTUBE_TRANSCRIPT_CHUNK_SIZE=900,
+            YOUTUBE_TRANSCRIPT_CHUNK_OVERLAP=120,
+        )
+        video = VideoMetadata(
+            video_id="abc123",
+            video_url="https://www.youtube.com/watch?v=abc123",
+            title="Gaming Mouse Review",
+            channel="Tech Lab",
+            published_at="2026-03-01",
+            view_count="1000",
+        )
+        extracted = ExtractedProductDetails(
+            product_name="Razer Viper V3 Pro",
+            category="gaming mouse",
+            features=["wireless", "lightweight"],
+            price="$159.99",
+            summary="A strong competitive gaming mouse.",
+            evidence_quotes=["Lightweight shell"],
+            confidence=0.88,
+        )
+
+        with patch(
+            "agents.youtube_review.video_analysis._fetch_video_metadata",
+            return_value=video,
+        ), patch(
+            "agents.youtube_review.video_analysis._fetch_transcript_text",
+            return_value="This review covers the Razer Viper V3 Pro and its lightweight wireless design.",
+        ), patch(
+            "agents.youtube_review.video_analysis.index_transcript",
+            new=AsyncMock(
+                return_value=(
+                    SimpleNamespace(
+                        chunks=[TranscriptChunk(chunk_index=0, text="Transcript chunk")],
+                    ),
+                    True,
+                )
+            ),
+        ), patch(
+            "agents.youtube_review.video_analysis._extract_product_details",
+            new=AsyncMock(return_value=extracted),
+        ), patch(
+            "agents.youtube_review.video_analysis._call_product_discovery_mcp",
+            new=AsyncMock(side_effect=RuntimeError("mcp unavailable")),
+        ):
+            result, debug = await video_analysis_agent.analyze_video_review(
+                YouTubeVideoRequest(
+                    youtube_url="https://www.youtube.com/watch?v=abc123",
+                    find_similar_products=True,
+                    product_mcp_url="http://localhost:5002/mcp",
+                ),
+                settings,
+            )
+
+        self.assertTrue(result.partial)
+        self.assertIsNotNone(result.extracted_product)
+        self.assertIsNone(result.similar_products)
+        self.assertIn("Similar-product lookup failed", result.notes)
+        self.assertEqual(debug["stage"], "completed")
+        self.assertIn("similar_products_error", debug)
+
+    async def test_video_analysis_creates_session_and_persists_initial_chat_history(self):
+        settings = SimpleNamespace(
+            YOUTUBE_API_KEY="yt-key",
+            OPENAI_API_KEY="oa-key",
+            OPENAI_MODEL="gpt-4o-mini",
+            OPENAI_EMBEDDING_MODEL="text-embedding-3-small",
+            OPENAI_EMBEDDING_DIMENSIONS=512,
+            ENABLE_PINECONE=False,
+            YOUTUBE_TRANSCRIPT_CHUNK_SIZE=900,
+            YOUTUBE_TRANSCRIPT_CHUNK_OVERLAP=120,
+        )
+        video = VideoMetadata(
+            video_id="session-vid",
+            video_url="https://www.youtube.com/watch?v=session-vid",
+            title="Gaming Mouse Review",
+            channel="Tech Lab",
+            published_at="2026-03-01",
+            view_count="1000",
+        )
+        extracted = ExtractedProductDetails(
+            product_name="Razer Viper V3 Pro",
+            category="gaming mouse",
+            features=["wireless", "lightweight"],
+            price="$159.99",
+            summary="A strong competitive gaming mouse.",
+            evidence_quotes=["Lightweight shell"],
+            confidence=0.88,
+        )
+        history_response = VideoChatResponse(
+            youtube_url=video.video_url,
+            answer="The transcript says it is extremely light and competition-focused.",
+            citations=["Chunk 0: It weighs almost nothing."],
+            confidence=0.84,
+        )
+
+        with patch(
+            "agents.youtube_review.video_analysis._fetch_video_metadata",
+            return_value=video,
+        ), patch(
+            "agents.youtube_review.video_analysis._fetch_transcript_text",
+            return_value="This review covers the Razer Viper V3 Pro and its lightweight wireless design.",
+        ), patch(
+            "agents.youtube_review.video_analysis.index_transcript",
+            new=AsyncMock(
+                return_value=(
+                    SimpleNamespace(
+                        transcript_hash="hash-123",
+                        chunks=[TranscriptChunk(chunk_index=0, text="Transcript chunk")],
+                    ),
+                    True,
+                )
+            ),
+        ), patch(
+            "agents.youtube_review.video_analysis._extract_product_details",
+            new=AsyncMock(return_value=extracted),
+        ), patch(
+            "agents.youtube_review.video_analysis.answer_chat_over_transcript",
+            new=AsyncMock(return_value=history_response),
+        ):
+            result, _debug = await video_analysis_agent.analyze_video_review(
+                YouTubeVideoRequest(
+                    youtube_url=video.video_url,
+                    chat_message="What stands out in this review?",
+                ),
+                settings,
+            )
+
+        try:
+            self.assertIsNotNone(result.session_id)
+            self.assertIsNotNone(result.chat_response)
+            self.assertEqual(result.chat_response.session_id, result.session_id)
+            self.assertEqual(len(result.chat_response.history), 2)
+            session = review_sessions.SESSION_STORE.get(result.session_id)
+            self.assertIsNotNone(session)
+            self.assertEqual(len(session.history), 2)
+            self.assertEqual(session.history[0].role, "user")
+            self.assertEqual(session.history[1].role, "assistant")
+        finally:
+            if result.session_id:
+                review_sessions.SESSION_STORE.replace_history(result.session_id, [])
+
+    async def test_chat_with_video_session_uses_persisted_history(self):
+        settings = SimpleNamespace(
+            OPENAI_API_KEY="oa-key",
+            OPENAI_MODEL="gpt-4o-mini",
+            OPENAI_EMBEDDING_MODEL="text-embedding-3-small",
+            OPENAI_EMBEDDING_DIMENSIONS=512,
+        )
+        video = VideoMetadata(
+            video_id="history-vid",
+            video_url="https://www.youtube.com/watch?v=history-vid",
+            title="Drawing Tablet Review",
+            channel="Art Tech",
+            published_at="2026-03-02",
+            view_count="500",
+        )
+        extracted = ExtractedProductDetails(
+            product_name="Wacom Cintiq 16",
+            category="drawing tablet",
+            features=["pen display"],
+            price="$649.99",
+            summary="Popular display tablet.",
+            evidence_quotes=["The pen feels natural."],
+            confidence=0.91,
+        )
+        session = review_sessions.SESSION_STORE.create(
+            video=video,
+            transcript_hash="hash-history",
+            extracted_product=extracted,
+        )
+        review_sessions.SESSION_STORE.append_turn(session.session_id, role="user", content="What tablet is reviewed?")
+        review_sessions.SESSION_STORE.append_turn(session.session_id, role="assistant", content="The video reviews the Wacom Cintiq 16.")
+        response_model = VideoChatResponse(
+            youtube_url=video.video_url,
+            answer="The reviewer says the pen feels natural for sketching.",
+            citations=["Chunk 2: The pen feels natural."],
+            confidence=0.8,
+        )
+
+        try:
+            with patch(
+                "agents.youtube_review.video_analysis.answer_chat_over_transcript",
+                new=AsyncMock(return_value=response_model),
+            ) as chat_mock:
+                response, _debug = await video_analysis_agent.chat_with_video_session(
+                    SimpleNamespace(session_id=session.session_id, chat_message="What do they say about the pen?"),
+                    settings,
+                )
+
+            history = chat_mock.await_args.kwargs["conversation_history"]
+            self.assertEqual(len(history), 2)
+            self.assertEqual(response.session_id, session.session_id)
+            self.assertEqual(len(response.history), 4)
+            self.assertEqual(response.history[-1].content, "The reviewer says the pen feels natural for sketching.")
+        finally:
+            review_sessions.SESSION_STORE.replace_history(session.session_id, [])
 
 
 if __name__ == "__main__":

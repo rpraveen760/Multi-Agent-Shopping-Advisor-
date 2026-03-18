@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
+import httpx
 from common.a2a_client import A2AClient
 from common.a2a_models import AgentCard
 from common.config import Settings
@@ -26,6 +28,16 @@ def resolve_mcp_interface_url(card: AgentCard | None) -> str | None:
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             return url
     return None
+
+
+def resolve_readiness_url(card: AgentCard | None) -> str | None:
+    if card is None or not getattr(card, "url", None):
+        return None
+
+    parsed = urlparse(card.url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return urlunparse((parsed.scheme, parsed.netloc, "/readiness", "", "", ""))
 
 
 async def verify_product_discovery_mcp(
@@ -56,15 +68,58 @@ async def verify_product_discovery_mcp(
     except Exception as exc:
         return False, f"MCP interface check failed: {exc}"
 
-    if not any(tool.name == "search_products" for tool in tools.tools):
+    tool_names = {tool.name for tool in tools.tools}
+    if "search_products" not in tool_names:
         return False, "MCP interface did not advertise search_products"
+    if "find_similar_products" not in tool_names:
+        return False, "MCP interface did not advertise find_similar_products"
 
     return True, None
+
+
+async def verify_youtube_review_runtime(
+    card: AgentCard,
+    *,
+    timeout_seconds: int = 5,
+) -> tuple[bool, str | None]:
+    skill_ids = {skill.id for skill in getattr(card, "skills", [])}
+    if "youtube-video-analysis" not in skill_ids:
+        return False, "Agent Card did not advertise youtube-video-analysis"
+
+    readiness_url = resolve_readiness_url(card)
+    if not readiness_url:
+        return False, "Could not derive the YouTube agent readiness endpoint"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(readiness_url)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        return False, f"YouTube readiness check failed: {exc}"
+
+    status = payload.get("status")
+    if status == "available":
+        return True, None
+
+    issues = payload.get("issues") or []
+    if isinstance(issues, list) and issues:
+        return False, "; ".join(str(item) for item in issues)
+    return False, "YouTube readiness endpoint reported degraded status"
 
 
 async def assess_agent_readiness(name: str, card: AgentCard) -> tuple[str, str]:
     """Return the runtime readiness status and description for a discovered agent."""
     description = getattr(card, "description", "") or ""
+
+    if name == "youtube-review":
+        ok, detail = await verify_youtube_review_runtime(card)
+        if ok:
+            return "available", description
+        degraded_description = description
+        if detail:
+            degraded_description = f"{description} (video-analysis unavailable: {detail})".strip()
+        return "degraded", degraded_description
 
     if name != "product-discovery":
         return "available", description

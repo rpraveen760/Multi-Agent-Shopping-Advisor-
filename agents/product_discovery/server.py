@@ -7,14 +7,11 @@ that the MCP server exposes. One source of truth, two access methods.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import json
 import logging
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 
 from agents.product_discovery.agent import search_products
-from agents.product_discovery.progress import PROGRESS_STORE
 from common.a2a_models import (
     AgentCard,
     AgentCardCapabilities,
@@ -66,8 +63,8 @@ AGENT_CARD = AgentCard(
     protocolVersion="0.3.0",
     name="Product Discovery Agent",
     description=(
-        "Discovers products matching a query with normalized pricing, ratings, "
-        "provenance, and purchase links. Also exposed as an MCP tool."
+        "Discovers products matching a query and exposes MCP tools for both legacy product search "
+        "and structured similar-product lookup backed by a mock catalog."
     ),
     url="http://localhost:5002/a2a/v1",
     preferredTransport="JSONRPC",
@@ -81,7 +78,7 @@ AGENT_CARD = AgentCard(
         pushNotifications=False,
         stateTransitionHistory=False,
     ),
-    defaultInputModes=["text/plain"],
+    defaultInputModes=["application/json", "text/plain"],
     defaultOutputModes=["application/json"],
     skills=[
         AgentCardSkill(
@@ -92,6 +89,16 @@ AGENT_CARD = AgentCard(
                 "with price, rating, source URLs, and confidence scores."
             ),
             inputModes=["text/plain"],
+            outputModes=["application/json"],
+        ),
+        AgentCardSkill(
+            id="similar-product-lookup",
+            name="Similar Product Lookup",
+            description=(
+                "Accepts structured product details from the YouTube review agent and returns similar "
+                "products from the mock product catalog through the MCP interface."
+            ),
+            inputModes=["application/json"],
             outputModes=["application/json"],
         ),
     ],
@@ -115,79 +122,28 @@ async def handle_send_message(
 
     logger.info("Received product search for: %s", query)
     settings = get_settings()
-    debug_snapshot = {
-        "query": query,
-        "search_query": "",
-        "search_queries": [],
-        "candidate_count": 0,
-        "stage": "accepted",
-        "candidates": [],
-        "enriched_candidates": [],
-        "candidate_entities": [],
-        "filtered_candidates": [],
-        "normalized_products": [],
-        "finalized_products": [],
-        "shortlist_reasons": [],
-        "rejected_generic_products": [],
-        "rejected_entities": [],
-        "summary": "",
-    }
-
-    async def publish_debug(stage: str, message: str, payload: dict) -> None:
-        debug_snapshot.update(payload)
-        debug_snapshot["stage"] = stage
-        task_store.update_status(
-            task.id,
-            "working",
-            make_agent_message(message),
-        )
-        task_store.set_artifacts(
-            task.id,
-            [
-                make_artifact(
-                    name="product-discovery-debug",
-                    text=json.dumps(debug_snapshot, indent=2),
-                    metadata={"schema": "ProductDiscoveryTrace", "stage": stage},
-                )
-            ],
-        )
-
-    await publish_debug(
-        "accepted",
-        f"Searching for products matching: {query}",
-        debug_snapshot,
+    task_store.update_status(
+        task.id,
+        "working",
+        make_agent_message(f"Searching for products matching: {query}"),
     )
 
     try:
-        try:
-            result = await search_products(
-                query=query,
-                settings=settings,
-                on_step=publish_debug,
-            )
-        except TypeError as exc:
-            if "on_step" not in str(exc):
-                raise
-            result = await search_products(
-                query=query,
-                settings=settings,
-            )
+        result = await search_products(
+            query=query,
+            settings=settings,
+        )
         result_artifact = make_artifact(
             name="product-discovery-result",
             text=result.model_dump_json(indent=2),
             metadata={"schema": "ProductDiscoveryResult"},
-        )
-        debug_artifact = make_artifact(
-            name="product-discovery-debug",
-            text=json.dumps(debug_snapshot, indent=2),
-            metadata={"schema": "ProductDiscoveryTrace", "stage": "completed"},
         )
 
         task.status = TaskStatus(
             state="completed",
             message=make_agent_message(f"Product search results for: {query}"),
         )
-        task.artifacts = [result_artifact, debug_artifact]
+        task.artifacts = [result_artifact]
 
     except Exception as exc:
         logger.exception("Product discovery failed for: %s", query)
@@ -235,17 +191,3 @@ app.mount("/mcp", ProductDiscoveryMCPApp(app), name="product-discovery-mcp")
 @app.get("/health")
 async def health():
     return {"status": "ok", "agent": "product-discovery"}
-
-
-@app.get("/debug/product-discovery/{trace_id}")
-async def get_debug_progress(trace_id: str):
-    payload = PROGRESS_STORE.get(trace_id)
-    if payload is None:
-        return JSONResponse({"detail": "trace not found"}, status_code=404)
-    return payload
-
-
-@app.delete("/debug/product-discovery/{trace_id}")
-async def clear_debug_progress(trace_id: str):
-    PROGRESS_STORE.clear(trace_id)
-    return {"status": "cleared", "trace_id": trace_id}

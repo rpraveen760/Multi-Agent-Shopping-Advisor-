@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from agents.orchestrator.runtime import extract_named_artifact_json
-from common.a2a_models import ProductDiscoveryResult, ReviewSummary, Task
+from common.a2a_models import ProductDiscoveryResult, ReviewSummary, Task, UnifiedVideoAnalysisResponse
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,21 @@ def extract_review_summary(task: Task) -> ReviewSummary | None:
     except Exception as exc:
         logger.debug("Failed to parse review summary artifact: %s", exc)
         return None
+def extract_video_analysis(task: Task) -> UnifiedVideoAnalysisResponse | None:
+    """Extract the structured video-analysis result from a completed Task."""
+    if task.status.state != "completed":
+        logger.warning("Video analysis task not completed: state=%s", task.status.state)
+        return None
 
+    data = extract_named_artifact_json(task, "video-analysis-result")
+    if data is None:
+        return None
 
-def extract_review_trace(task: Task) -> dict[str, object] | None:
-    return extract_named_artifact_json(task, "review-debug")
+    try:
+        return UnifiedVideoAnalysisResponse(**data)
+    except Exception as exc:
+        logger.debug("Failed to parse video analysis artifact: %s", exc)
+        return None
 
 
 def normalize_name_key(value: str) -> list[str]:

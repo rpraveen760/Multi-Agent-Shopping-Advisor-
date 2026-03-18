@@ -9,11 +9,13 @@ from typing import Any, Callable
 from openai import AsyncOpenAI
 
 from common.a2a_models import (
+    ExtractedProductDetails,
     ProductDiscoveryResult,
     RankedRecommendation,
     ReviewSummary,
     UnifiedResponse,
     UnifiedSourceLink,
+    UnifiedVideoAnalysisResponse,
 )
 from common.config import Settings
 from common.runtime_helpers import close_async_resource
@@ -186,14 +188,131 @@ def fallback_synthesis(
     )
 
 
+def build_video_analysis_source_links(
+    video_analysis: UnifiedVideoAnalysisResponse,
+    product_result: ProductDiscoveryResult | None = None,
+) -> list[UnifiedSourceLink]:
+    sources: list[UnifiedSourceLink] = []
+    seen_urls: set[str] = set()
+
+    if video_analysis.video and video_analysis.video.video_url not in seen_urls:
+        sources.append(
+            UnifiedSourceLink(
+                type="video",
+                title=f"{video_analysis.video.title} by {video_analysis.video.channel}",
+                url=video_analysis.video.video_url,
+                agent="youtube-review",
+            )
+        )
+        seen_urls.add(video_analysis.video.video_url)
+
+    if product_result:
+        for source in build_source_links(product_result, {}):
+            if source.url in seen_urls:
+                continue
+            sources.append(source)
+            seen_urls.add(source.url)
+
+    return sources
+
+
+def _build_video_mode_recommendations(
+    video_analysis: UnifiedVideoAnalysisResponse,
+    product_result: ProductDiscoveryResult | None,
+    *,
+    max_final_recommendations: int,
+) -> list[RankedRecommendation]:
+    if product_result and product_result.products:
+        ordered = sorted(
+            product_result.products,
+            key=lambda product: (-(product.confidence or 0.0), product.name),
+        )[:max_final_recommendations]
+        recommendations: list[RankedRecommendation] = []
+        for index, product in enumerate(ordered, start=1):
+            rationale = (
+                f"Selected as a similar product to {video_analysis.extracted_product.product_name}. "
+                if video_analysis.extracted_product
+                else "Selected from structured similar-product lookup. "
+            )
+            rationale += f"Catalog confidence {product.confidence:.2f} with features matching the reviewed device."
+            recommendations.append(
+                RankedRecommendation(
+                    rank=index,
+                    product_name=product.name,
+                    price=product.price,
+                    rating=product.rating,
+                    sentiment=None,
+                    score=product.confidence or 0.0,
+                    rationale=rationale,
+                    pros=product.key_features[:3],
+                    cons=[],
+                    confidence=product.confidence,
+                )
+            )
+        return recommendations
+
+    if video_analysis.extracted_product:
+        extracted = video_analysis.extracted_product
+        return [
+            RankedRecommendation(
+                rank=1,
+                product_name=extracted.product_name,
+                price=extracted.price,
+                rating=None,
+                sentiment="grounded",
+                score=extracted.confidence,
+                rationale=extracted.summary or "Structured product details extracted from the review transcript.",
+                pros=extracted.features[:3],
+                cons=[],
+                confidence=extracted.confidence,
+            )
+        ]
+    return []
+
+
+def synthesize_video_response(
+    *,
+    query: str,
+    video_analysis: UnifiedVideoAnalysisResponse,
+    product_result: ProductDiscoveryResult | None,
+    errors: list[str],
+    max_final_recommendations: int = 3,
+) -> UnifiedResponse:
+    recommendations = _build_video_mode_recommendations(
+        video_analysis,
+        product_result,
+        max_final_recommendations=max_final_recommendations,
+    )
+    notes = video_analysis.notes
+    if errors:
+        notes = " ".join(part for part in [notes, "; ".join(errors)] if part)
+
+    return UnifiedResponse(
+        query=query,
+        recommendations=recommendations,
+        sources=build_video_analysis_source_links(video_analysis, product_result),
+        mode="youtube_video",
+        partial=video_analysis.partial or bool(errors),
+        notes=notes,
+        youtube_url=video_analysis.youtube_url,
+        session_id=video_analysis.session_id,
+        video=video_analysis.video,
+        transcript_status=video_analysis.transcript_status,
+        indexing_status=video_analysis.indexing_status,
+        extracted_product=video_analysis.extracted_product,
+        chat_response=video_analysis.chat_response,
+        similar_products=video_analysis.similar_products,
+    )
+
+
 async def synthesize_response(
     *,
     query: str,
     settings: Settings,
     product_result: ProductDiscoveryResult | None,
     review_results: dict[str, ReviewSummary],
+    video_analysis: UnifiedVideoAnalysisResponse | None,
     decision: Any,
-    trace: Any,
     errors: list[str],
     llm_client: AsyncOpenAI | None = None,
     llm_client_factory: Callable[..., AsyncOpenAI] = AsyncOpenAI,
@@ -201,32 +320,22 @@ async def synthesize_response(
     match_known_product_name_fn: Callable[[str, list[str]], str | None],
 ) -> dict[str, Any]:
     """Merge product discovery and review data into a UnifiedResponse."""
+    if video_analysis is not None:
+        unified = synthesize_video_response(
+            query=query,
+            video_analysis=video_analysis,
+            product_result=product_result,
+            errors=errors,
+            max_final_recommendations=max_final_recommendations,
+        )
+        return {"unified_response": unified, "errors": errors}
+
     has_products = product_result and len(product_result.products) > 0
     has_reviews = len(review_results) > 0
     requested_products = bool(decision and decision.needs_product_discovery)
     requested_reviews = bool(decision and decision.needs_youtube_reviews)
     missing_requested_products = requested_products and not has_products
     missing_requested_reviews = requested_reviews and not has_reviews
-
-    if trace:
-        trace.add_event(
-            "Synthesizing unified response",
-            status="active",
-            detail="Merging product discovery and YouTube review evidence.",
-            data={
-                "product_count": len(product_result.products) if product_result else 0,
-                "review_count": len(review_results),
-            },
-        )
-        trace.set_synthesis(
-            {
-                "status": "running",
-                "product_count": len(product_result.products) if product_result else 0,
-                "review_count": len(review_results),
-                "requested_products": requested_products,
-                "requested_reviews": requested_reviews,
-            }
-        )
 
     if not has_products and not has_reviews:
         if requested_products:
@@ -247,22 +356,6 @@ async def synthesize_response(
             partial=True,
             notes=note,
         )
-        if trace:
-            trace.set_synthesis(
-                {
-                    "status": "completed",
-                    "product_count": 0,
-                    "review_count": 0,
-                    "partial": True,
-                    "notes": unified.notes,
-                }
-            )
-            trace.set_final_response(unified)
-            trace.add_event(
-                "Unified response ready",
-                status="done",
-                detail=unified.notes,
-            )
         return {"unified_response": unified, "errors": errors}
 
     evidence_parts: list[str] = []
@@ -368,25 +461,6 @@ async def synthesize_response(
             notes=notes,
         )
 
-        if trace:
-            trace.set_synthesis(
-                {
-                    "status": "completed",
-                    "product_count": len(product_result.products) if product_result else 0,
-                    "review_count": len(review_results),
-                    "partial": partial,
-                    "notes": notes,
-                    "recommendation_count": len(recommendations),
-                    "source_count": len(sources),
-                }
-            )
-            trace.set_final_response(unified)
-            trace.add_event(
-                "Unified response ready",
-                status="done",
-                detail=f"Built {len(recommendations)} ranked recommendations.",
-            )
-
         logger.info(
             "Synthesis complete: %d recommendations, %d sources",
             len(recommendations),
@@ -398,13 +472,6 @@ async def synthesize_response(
         msg = f"Synthesis LLM call failed: {exc}"
         logger.error(msg)
         errors.append(msg)
-        if trace:
-            trace.append_error(msg)
-            trace.add_event(
-                "Synthesis failed, using fallback",
-                status="error",
-                detail=str(exc),
-            )
 
         unified = fallback_synthesis(
             query=query,
@@ -413,19 +480,6 @@ async def synthesize_response(
             errors=errors,
             max_final_recommendations=max_final_recommendations,
         )
-        if trace:
-            trace.set_synthesis(
-                {
-                    "status": "fallback",
-                    "product_count": len(product_result.products) if product_result else 0,
-                    "review_count": len(review_results),
-                    "partial": True,
-                    "notes": unified.notes,
-                    "recommendation_count": len(unified.recommendations),
-                    "source_count": len(unified.sources),
-                }
-            )
-            trace.set_final_response(unified)
         return {"unified_response": unified, "errors": errors}
     finally:
         if owned_client:

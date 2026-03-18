@@ -1,75 +1,66 @@
 # Federated Multi-Agent System
 
-A federated shopping advisor built with:
+A PDF-aligned federated multi-agent demo built with:
 
-- `A2A` for agent discovery and downstream delegation
-- `MCP` for Product Discovery execution
+- `A2A` for agent discovery and task delegation
+- `MCP` for Product Discovery tools
 - `LangGraph` for orchestration
-- `FastAPI` for the backend and demo UI
+- `FastAPI` for the services and demo UI
+- `Pinecone` for transcript retrieval when credentials are configured
 
-The system keeps the assignment architecture intact:
+The required architecture stays intact:
 
 - `Central Orchestrator`
-- `Product Discovery Agent (MCP-based)`
 - `YouTube Product Review Agent`
+- `Product Discovery Agent (MCP-based)`
 
 See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full design walkthrough.
 
-## Architecture
+## Primary Flow
+
+The primary demo path now matches the assignment PDF:
+
+1. The user submits a YouTube product review URL.
+2. The Central Orchestrator discovers both downstream services through A2A Agent Cards.
+3. The orchestrator delegates the URL to the YouTube Product Review Agent over A2A.
+4. The YouTube agent:
+   - validates the URL
+   - fetches video metadata
+   - extracts transcript/subtitle text
+   - indexes transcript chunks for grounded retrieval
+   - supports transcript chat
+   - extracts structured product details
+   - optionally calls Product Discovery over MCP for similar products
+5. The orchestrator returns one unified response with explicit `sources`.
+
+The older shopping-query-first flow is still available as a secondary compatibility path.
+
+## High-Level Architecture
 
 ```mermaid
 flowchart TD
-    U["User Query"] --> O["Central Orchestrator<br/>FastAPI + LangGraph<br/>:8000"]
+    U["User"] --> O["Central Orchestrator<br/>FastAPI + LangGraph<br/>:8000"]
+    O -->|Discover via A2A| Y["YouTube Product Review Agent<br/>FastAPI + A2A<br/>:5001"]
     O -->|Discover via A2A| P["Product Discovery Agent<br/>FastAPI + MCP<br/>:5002"]
-    O -->|Discover via A2A| Y["YouTube Review Agent<br/>FastAPI + A2A<br/>:5001"]
-    O -->|Call MCP search_products| P
     O -->|SendMessage / GetTask| Y
-    P --> W["Web retrieval + enrichment + shortlist finalization"]
-    Y --> T["YouTube search + transcript evidence + review summary"]
-    O --> R["Unified response<br/>recommendations + sources"]
+    Y -->|MCP find_similar_products| P
+    Y --> R["Transcript extraction + indexing + chat"]
+    P --> C["Mock product catalog lookup"]
+    O --> F["Unified response<br/>video metadata + extracted product + similar products + sources"]
 ```
 
 ## What The System Does
 
-- Discovers downstream services from A2A Agent Cards
-- Uses one structured LLM query-understanding step
-- Calls Product Discovery through the MCP interface advertised by the discovered Product Discovery service
-- Builds a concrete `1-3` product shortlist before any YouTube fan-out happens
-- Sends only finalized products to the YouTube Review Agent
-- Returns a unified ranked response with explicit source links
-- Exposes a live trace page that shows discovery, routing, shortlist formation, review progress, and synthesis
-
-## How It Works
-
-1. `discover_agents`
-   The orchestrator fetches Agent Cards from `/.well-known/agent-card.json` and records the downstream endpoints and skills.
-
-2. `route_tasks`
-   GPT-4o-mini interprets the shopper query once, reformulates it when needed, and the orchestrator then assembles routes deterministically from the discovered services.
-
-3. `execute_product_discovery`
-   The orchestrator resolves the Product Discovery MCP interface from the discovered Agent Card and calls `search_products` on the already-running Product Discovery service.
-
-   Product Discovery then:
-   - expands the query into a small generic retrieval set
-   - gathers and enriches candidate pages
-   - clusters repeated product entities across sources
-   - finalizes up to `3` real products
-   - prefers better product/detail links when it can ground them
-
-4. `execute_youtube_reviews`
-   Only finalized shortlisted products are sent to the YouTube Review Agent over A2A. The YouTube agent searches videos, ranks them, extracts transcript or description evidence, and builds structured review summaries.
-
-5. `synthesize`
-   The orchestrator merges product and review evidence into a grounded final response with:
-   - ranked recommendations
-   - source links
-   - partial-result notes when one path degrades
+- discovers downstream services from A2A Agent Cards
+- delegates the primary YouTube URL workflow over A2A
+- resolves the Product Discovery MCP interface from the discovered Agent Card
+- allows the YouTube agent to trigger Product Discovery through MCP with a structured payload
+- supports transcript-grounded chat for a single review video
+- returns structured product details plus similar products in one final response
 
 ## Services And Ports
 
 - UI: `http://localhost:8000/`
-- Live Trace UI: `http://localhost:8000/trace`
 - Orchestrator API: `http://localhost:8000/query`
 - Orchestrator status: `http://localhost:8000/status`
 - Agent list: `http://localhost:8000/agents`
@@ -80,29 +71,38 @@ flowchart TD
 
 ### A2A
 
-A2A is the inter-agent layer in this project.
+A2A is the federation layer in this repo.
 
-- Agents are discovered through `/.well-known/agent-card.json`
-- A2A JSON-RPC runs on `/a2a/v1`
-- The orchestrator uses `SendMessage` and `GetTask` for downstream A2A work
-- The YouTube Review Agent is executed over A2A
-- Product Discovery is still discovered through A2A even though its primary execution path is MCP
+- agent cards are discovered through `/.well-known/agent-card.json`
+- A2A JSON-RPC is exposed on `/a2a/v1`
+- the orchestrator delegates the primary YouTube URL task over A2A
+- the orchestrator still discovers the Product Discovery Agent through A2A even though Product Discovery is executed through MCP
 
 ### MCP
 
-MCP is used for Product Discovery.
+Product Discovery exposes MCP on the running service instance.
 
-- The Product Discovery Agent advertises an MCP interface in its Agent Card
-- The orchestrator resolves that MCP endpoint from the discovered card
-- The orchestrator calls the running Product Discovery service over MCP HTTP
-- The MCP tool name is `search_products`
-- The tool returns shortlist-quality `ProductDiscoveryResult` payloads
+Available MCP tools:
+
+- `search_products`
+- `find_similar_products`
+
+The new PDF-aligned path uses `find_similar_products`, which accepts structured product details extracted from the review video and returns catalog-style JSON.
+
+You can still inspect the Product Discovery MCP tool surface locally:
+
+```powershell
+python scripts/test_mcp_stdio.py list
+```
 
 ## Prerequisites
 
 - Python `3.11+`
 - `OPENAI_API_KEY`
 - `YOUTUBE_API_KEY`
+- `PINECONE_API_KEY` for real Pinecone indexing
+
+If Pinecone credentials are not configured, the YouTube agent keeps working with an in-memory transcript index for local development and tests.
 
 ## Setup
 
@@ -120,6 +120,18 @@ Then fill in `.env` with:
 
 - `OPENAI_API_KEY`
 - `YOUTUBE_API_KEY`
+- `PINECONE_API_KEY`
+
+Optional settings:
+
+- `OPENAI_MODEL`
+- `OPENAI_EMBEDDING_MODEL`
+- `PINECONE_INDEX_NAME`
+- `PINECONE_CLOUD`
+- `PINECONE_REGION`
+- `ENABLE_PINECONE`
+- `ENABLE_LEGACY_SHOPPING_FLOW`
+- `ENABLE_MOCK_PRODUCT_CATALOG`
 
 ## Run The Stack
 
@@ -130,57 +142,66 @@ python run.py
 This starts:
 
 - the orchestrator on `:8000`
-- the YouTube Review Agent on `:5001`
+- the YouTube Product Review Agent on `:5001`
 - the Product Discovery Agent on `:5002`
 
-The launcher waits for service health and downstream readiness checks before declaring the system ready.
+The launcher checks service health and downstream readiness before reporting the stack as ready.
 
-## UI
+## Main API
 
-- Main app: `http://localhost:8000/`
-- Live trace: `http://localhost:8000/trace`
-- FastAPI docs: `http://localhost:8000/docs`
+### Primary PDF Flow
 
-The main app is served by the orchestrator itself, so it uses same-origin API calls and does not need a separate frontend dev server.
+```powershell
+$body = @'
+{
+  "youtube_url": "https://www.youtube.com/watch?v=abc123",
+  "chat_message": "What product is being reviewed and what are its key strengths?",
+  "find_similar_products": true
+}
+'@
+curl.exe -s -X POST http://localhost:8000/query -H "Content-Type: application/json" -d $body | python -m json.tool
+```
 
-## Example Query
+### Legacy Shopping Flow
 
 ```powershell
 $body = '{"query": "best wireless earbuds under 100"}'
 curl.exe -s -X POST http://localhost:8000/query -H "Content-Type: application/json" -d $body | python -m json.tool
 ```
 
-Example response shape:
+### Example Response Shape
 
 ```json
 {
-  "query": "best wireless earbuds under 100",
+  "query": "https://www.youtube.com/watch?v=abc123",
+  "mode": "youtube_video",
+  "youtube_url": "https://www.youtube.com/watch?v=abc123",
   "recommendations": [
     {
       "rank": 1,
-      "product_name": "Sony WF-1000XM5",
-      "price": "$99.99",
-      "rating": "4.5/5",
-      "sentiment": "positive",
-      "score": 0.91,
-      "rationale": "Strong overall balance of price, features, and review sentiment.",
-      "pros": ["Strong ANC"],
-      "cons": ["Premium pricing"],
-      "confidence": 0.89
+      "product_name": "Logitech G Pro X Superlight 2",
+      "price": "$149.99",
+      "rating": "4.6/5",
+      "sentiment": null,
+      "score": 0.88,
+      "rationale": "Selected as a similar product from the structured MCP lookup.",
+      "pros": ["Superlight competitive shape"],
+      "cons": [],
+      "confidence": 0.88
     }
   ],
   "sources": [
     {
-      "type": "product",
-      "title": "Sony WF-1000XM5 on Example Merchant",
-      "url": "https://example.com/product",
-      "agent": "product-discovery"
+      "type": "video",
+      "title": "Gaming Mouse Review by Tech Lab",
+      "url": "https://www.youtube.com/watch?v=abc123",
+      "agent": "youtube-review"
     },
     {
-      "type": "video",
-      "title": "Sony WF-1000XM5 review by Audio Lab",
-      "url": "https://youtube.com/watch?v=abc123",
-      "agent": "youtube-review"
+      "type": "product",
+      "title": "Logitech G Pro X Superlight 2 on Mock Catalog",
+      "url": "https://catalog.example/products/logitech-g-pro-x-superlight-2",
+      "agent": "product-discovery"
     }
   ],
   "partial": false,
@@ -188,110 +209,18 @@ Example response shape:
 }
 ```
 
-## Live Trace
-
-`/trace` is a demo/debug surface for the full orchestration run. It shows:
-
-- discovered agents
-- query understanding and routing
-- Product Discovery search queries and shortlist formation
-- finalized products
-- YouTube review targets
-- selected videos
-- transcript evidence
-- final recommendations and source links
+The final payload still explicitly includes `"sources"` so the UI can show exactly where the answer came from.
 
 ## Helpful Endpoints
 
 - `GET /`
-- `GET /trace`
 - `POST /query`
-- `POST /query/trace`
-- `GET /query/trace/{run_id}`
+- `POST /video/chat`
 - `GET /health`
 - `GET /status`
 - `GET /agents`
-- `GET /.well-known/agent-card.json` on each downstream agent
 
 Common local URLs:
 
 - `GET http://localhost:8000/`
-- `GET http://localhost:8000/trace`
 - `GET http://localhost:8000/status`
-- `GET http://localhost:8000/agents`
-- `POST http://localhost:8000/query`
-
-## MCP Tool
-
-The Product Discovery MCP endpoint is:
-
-- `http://localhost:5002/mcp`
-
-The tool name is:
-
-- `search_products`
-
-The repo also includes a stdio MCP helper for local testing:
-
-```powershell
-python scripts/test_mcp_stdio.py list
-python scripts/test_mcp_stdio.py call "best budget mechanical keyboard"
-```
-
-## A2A Contract
-
-- Discovery uses Agent Cards
-- JSON-RPC is strictly validated as `2.0`
-- Downstream A2A tasks are polled until terminal state
-- The YouTube Review Agent returns structured artifacts that feed synthesis
-- Product Discovery remains MCP-first, with A2A retained as a resilience fallback path in the orchestrator runtime
-
-## Project Structure
-
-```text
-federated-multi-agent-system/
-|-- run.py
-|-- README.md
-|-- requirements.txt
-|-- .env.example
-|-- common/
-|   |-- a2a_client.py
-|   |-- a2a_models.py
-|   |-- a2a_server.py
-|   |-- config.py
-|   `-- runtime_helpers.py
-|-- agents/
-|   |-- orchestrator/
-|   |   |-- discovery.py
-|   |   |-- graph.py
-|   |   |-- product_runtime.py
-|   |   |-- review_runtime.py
-|   |   |-- routing.py
-|   |   |-- runtime.py
-|   |   |-- server.py
-|   |   |-- synthesis_runtime.py
-|   |   `-- trace.py
-|   |-- product_discovery/
-|   |   |-- agent.py
-|   |   |-- mcp_server.py
-|   |   |-- pipeline.py
-|   |   |-- progress.py
-|   |   |-- server.py
-|   |   `-- traces.py
-|   `-- youtube_review/
-|       |-- agent.py
-|       `-- server.py
-|-- frontend/
-|   |-- index.html
-|   `-- trace.html
-|-- scripts/
-|   `-- test_mcp_stdio.py
-`-- tests/
-```
-
-## Notes
-
-- The final response always exposes a top-level `sources` list.
-- Product Discovery is the shortlist authority.
-- YouTube reviews happen only after shortlist finalization.
-- The system is designed to degrade gracefully and return partial results instead of failing hard when possible.

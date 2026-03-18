@@ -177,8 +177,17 @@ class UnifiedResponse(BaseModel):
     query: str
     recommendations: list[RankedRecommendation]
     sources: list[UnifiedSourceLink]
+    mode: Literal["shopping_query", "youtube_video"] = "shopping_query"
     partial: bool = False  # True if some agent data was unavailable
     notes: str | None = None  # e.g. "YouTube agent was unreachable"
+    youtube_url: str | None = None
+    session_id: str | None = None
+    video: "VideoMetadata | None" = None
+    transcript_status: str | None = None
+    indexing_status: str | None = None
+    extracted_product: "ExtractedProductDetails | None" = None
+    chat_response: "VideoChatResponse | None" = None
+    similar_products: "SimilarProductsResponse | None" = None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -222,6 +231,90 @@ class ProductDiscoveryResult(BaseModel):
     summary: str = ""
 
 
+class TranscriptChunk(BaseModel):
+    chunk_index: int
+    text: str
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+
+
+class VideoMetadata(BaseModel):
+    video_id: str
+    video_url: str
+    title: str
+    channel: str
+    published_at: str | None = None
+    view_count: str | None = None
+
+
+class ExtractedProductDetails(BaseModel):
+    product_name: str
+    category: str | None = None
+    features: list[str] = []
+    price: str | None = None
+    summary: str = ""
+    evidence_quotes: list[str] = []
+    confidence: float = 0.0
+
+
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class YouTubeVideoRequest(BaseModel):
+    youtube_url: str
+    chat_message: str | None = None
+    find_similar_products: bool = False
+    product_mcp_url: str | None = None
+    legacy_query: str | None = None
+    session_id: str | None = None
+
+
+class VideoChatRequest(BaseModel):
+    session_id: str
+    chat_message: str
+
+
+class VideoChatResponse(BaseModel):
+    youtube_url: str
+    answer: str
+    citations: list[str] = []
+    confidence: float = 0.0
+    session_id: str | None = None
+    history: list[ConversationTurn] = []
+
+
+class SimilarProductsRequest(BaseModel):
+    product_name: str
+    category: str | None = None
+    features: list[str] = []
+    price: str | None = None
+    source_video_url: str
+    constraints: dict[str, Any] | None = None
+
+
+class SimilarProductsResponse(BaseModel):
+    request: SimilarProductsRequest
+    products: list[Product] = []
+    summary: str = ""
+
+
+class UnifiedVideoAnalysisResponse(BaseModel):
+    youtube_url: str
+    video: VideoMetadata | None = None
+    session_id: str | None = None
+    transcript_status: str = "accepted"
+    indexing_status: str = "pending"
+    transcript_chunks: list[TranscriptChunk] = []
+    extracted_product: ExtractedProductDetails | None = None
+    chat_response: VideoChatResponse | None = None
+    similar_products: SimilarProductsResponse | None = None
+    summary: str = ""
+    partial: bool = False
+    notes: str | None = None
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Helper Factory Functions
 # ═══════════════════════════════════════════════════════════════════
@@ -256,3 +349,6 @@ def make_artifact(name: str, text: str, metadata: dict[str, Any] | None = None) 
         parts=[TextPart(text=text)],
         metadata=metadata,
     )
+
+
+UnifiedResponse.model_rebuild()

@@ -1,16 +1,7 @@
-"""Central Orchestrator - FastAPI server.
-
-Endpoints:
-    GET  /         - Serve the frontend UI.
-    POST /query    - Run the full orchestration pipeline for a shopping query.
-    GET  /health   - Health check for the orchestrator process.
-    GET  /status   - Aggregated downstream agent readiness.
-    GET  /agents   - List discovered downstream agents.
-"""
+"""Central Orchestrator - FastAPI server."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -18,25 +9,26 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agents.orchestrator.discovery import (
     agent_endpoints,
     resolve_mcp_interface_url,
     verify_product_discovery_mcp,
+    verify_youtube_review_runtime,
 )
 from agents.orchestrator.graph import run_query
-from agents.orchestrator.trace import QueryTraceSnapshot, TraceRecorder, TraceStore
+from agents.orchestrator.runtime import resolve_send_message_result, task_status_text
+from agents.orchestrator.video_runtime import build_video_chat_payload, extract_video_chat_response
 from common.a2a_client import A2AClient
-from common.a2a_models import UnifiedResponse
+from common.a2a_models import Task, UnifiedResponse, VideoChatRequest, VideoChatResponse
 from common.config import configure_logging, get_settings
+from common.runtime_helpers import format_exception_detail
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 FRONTEND_INDEX = FRONTEND_DIR / "index.html"
-TRACE_INDEX = FRONTEND_DIR / "trace.html"
-TRACE_STORE = TraceStore()
 
 # ── FastAPI App ──────────────────────────────────────────────────
 
@@ -64,22 +56,36 @@ if FRONTEND_DIR.exists():
 
 class QueryRequest(BaseModel):
     """Request body for the /query endpoint."""
-    query: str = Field(
-        ...,
-        description="Natural-language shopping query",
+    query: str | None = Field(
+        default=None,
+        description="Legacy natural-language shopping query",
         min_length=1,
         max_length=500,
         examples=["best wireless earbuds under $100"],
     )
+    youtube_url: str | None = Field(
+        default=None,
+        description="Primary PDF flow: a YouTube product review URL",
+        min_length=5,
+        max_length=1000,
+        examples=["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+    )
+    chat_message: str | None = Field(
+        default=None,
+        description="Optional follow-up question to answer from transcript evidence",
+        min_length=1,
+        max_length=500,
+    )
+    find_similar_products: bool = Field(
+        default=False,
+        description="Whether the YouTube agent should trigger Product Discovery via MCP for similar products",
+    )
 
-
-class QueryResponse(BaseModel):
-    """Response body from the /query endpoint."""
-    query: str
-    recommendations: list[dict]
-    sources: list[dict]
-    partial: bool = False
-    notes: str | None = None
+    @model_validator(mode="after")
+    def validate_inputs(self):
+        if not (self.query or self.youtube_url):
+            raise ValueError("Either query or youtube_url is required")
+        return self
 
 
 class AgentStatusItem(BaseModel):
@@ -96,13 +102,6 @@ class StatusResponse(BaseModel):
     available_agents: int
     total_agents: int
     agents: list[AgentStatusItem]
-
-
-class TraceStartResponse(BaseModel):
-    run_id: str
-    query: str
-    status: str
-    status_url: str
 
 async def _discover_agents() -> list[dict]:
     settings = get_settings()
@@ -151,8 +150,21 @@ async def _verify_product_discovery_mcp(card) -> tuple[bool, str | None]:
     return await verify_product_discovery_mcp(card)
 
 
+async def _verify_youtube_review_runtime(card) -> tuple[bool, str | None]:
+    return await verify_youtube_review_runtime(card)
+
+
 async def _assess_agent_readiness(name: str, card) -> tuple[str, str]:
     description = getattr(card, "description", "") or ""
+
+    if name == "youtube-review":
+        ok, detail = await _verify_youtube_review_runtime(card)
+        if ok:
+            return "available", description
+        degraded_description = description
+        if detail:
+            degraded_description = f"{description} (video-analysis unavailable: {detail})".strip()
+        return "degraded", degraded_description
 
     if name != "product-discovery":
         return "available", description
@@ -177,37 +189,22 @@ async def frontend_index():
     return FileResponse(FRONTEND_INDEX)
 
 
-@app.get("/trace")
-async def trace_index():
-    """Serve the live execution trace UI."""
-    if not TRACE_INDEX.exists():
-        raise HTTPException(status_code=404, detail="Trace frontend not found")
-    return FileResponse(TRACE_INDEX)
-
-
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query", response_model=UnifiedResponse)
 async def query_endpoint(request: QueryRequest):
-    """Run the orchestration pipeline for a shopping query.
-
-    Discovers agents, routes the query, executes agent calls in parallel
-    where possible, and synthesizes a ranked response.
-    """
-    logger.info("Received query: %s", request.query)
+    """Run the orchestrator for either a legacy shopping query or a YouTube review URL."""
+    effective_query = (request.query or request.youtube_url or "").strip()
+    logger.info("Received orchestrator request: %s", effective_query)
 
     try:
         settings = get_settings()
         result: UnifiedResponse = await run_query(
-            user_query=request.query,
+            user_query=effective_query,
             settings=settings,
+            youtube_url=request.youtube_url,
+            chat_message=request.chat_message,
+            find_similar_products=request.find_similar_products,
         )
-
-        return QueryResponse(
-            query=result.query,
-            recommendations=[r.model_dump() for r in result.recommendations],
-            sources=[s.model_dump() for s in result.sources],
-            partial=result.partial,
-            notes=result.notes,
-        )
+        return result
 
     except Exception as exc:
         logger.exception("Query pipeline failed: %s", exc)
@@ -217,61 +214,54 @@ async def query_endpoint(request: QueryRequest):
         )
 
 
-async def _run_traced_query(run_id: str, query: str) -> None:
-    """Execute a query in the background while publishing live trace events."""
-    recorder = TraceRecorder(TRACE_STORE, run_id)
-    recorder.mark_running()
-    recorder.add_event(
-        "Trace started",
-        status="done",
-        detail=f"Queued live trace for query: {query}",
-    )
+@app.post("/video/chat", response_model=VideoChatResponse)
+async def video_chat_endpoint(request: VideoChatRequest):
+    """Continue a transcript-grounded conversation for an existing YouTube session."""
+    settings = get_settings()
+    client = A2AClient()
 
     try:
-        settings = get_settings()
-        result = await run_query(
-            user_query=query,
-            settings=settings,
-            trace_recorder=recorder,
+        youtube_card = await client.discover_agent(settings.YOUTUBE_AGENT_CARD_URL)
+        skill_ids = {skill.id for skill in getattr(youtube_card, "skills", [])}
+        if "youtube-transcript-chat" not in skill_ids:
+            raise HTTPException(
+                status_code=503,
+                detail="The discovered YouTube agent does not advertise transcript chat support.",
+            )
+        payload = build_video_chat_payload(
+            session_id=request.session_id,
+            chat_message=request.chat_message,
         )
-        if isinstance(result, UnifiedResponse):
-            recorder.set_final_response(result)
-        recorder.mark_completed()
+        result = await client.send_message(youtube_card.url, payload)
+        result = await resolve_send_message_result(
+            result,
+            client=client,
+            agent_url=youtube_card.url,
+            timeout_seconds=settings.A2A_CLIENT_TIMEOUT_SECONDS,
+        )
+
+        if isinstance(result, Task):
+            parsed = extract_video_chat_response(result)
+            if parsed is not None:
+                return parsed
+
+            detail = task_status_text(result) or "Transcript chat returned no parseable response."
+            if result.status.state == "failed":
+                status_code = 404 if "No transcript chat session exists" in detail else 502
+                raise HTTPException(status_code=status_code, detail=detail)
+            raise HTTPException(status_code=502, detail=detail)
+
+        raise HTTPException(status_code=502, detail="Transcript chat returned no task payload.")
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("Traced query pipeline failed: %s", exc)
-        recorder.mark_failed(str(exc))
-        recorder.add_event(
-            "Trace failed",
-            status="error",
-            detail=str(exc),
+        logger.exception("Transcript chat pipeline failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Transcript chat failed: {format_exception_detail(exc)}",
         )
-
-
-def _launch_traced_query(run_id: str, query: str) -> None:
-    """Launch a traced query without blocking the request thread."""
-    asyncio.create_task(_run_traced_query(run_id, query))
-
-
-@app.post("/query/trace", response_model=TraceStartResponse, status_code=202)
-async def start_trace_query(request: QueryRequest):
-    """Start a traced query run and return a polling handle."""
-    snapshot = TRACE_STORE.create_run(request.query)
-    _launch_traced_query(snapshot.run_id, request.query)
-    return TraceStartResponse(
-        run_id=snapshot.run_id,
-        query=request.query,
-        status=snapshot.status,
-        status_url=f"/query/trace/{snapshot.run_id}",
-    )
-
-
-@app.get("/query/trace/{run_id}", response_model=QueryTraceSnapshot)
-async def get_trace_query(run_id: str):
-    """Return the latest live trace snapshot for a run."""
-    snapshot = TRACE_STORE.get_run(run_id)
-    if snapshot is None:
-        raise HTTPException(status_code=404, detail="Trace run not found")
-    return snapshot
+    finally:
+        await client.close()
 
 
 @app.get("/health")

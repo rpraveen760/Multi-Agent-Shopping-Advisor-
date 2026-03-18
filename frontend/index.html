@@ -159,13 +159,42 @@
     .search-btn:hover:not(:disabled) { transform: translateY(-1px); }
     .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .trace-link {
-      color: var(--cyan);
-      text-decoration: none;
-      font-weight: 600;
+    .search-options {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.75rem;
+      margin-top: 0.85rem;
+      align-items: center;
     }
 
-    .trace-link:hover { color: #67e8f9; }
+    .secondary-input {
+      width: 100%;
+      background: rgba(26, 34, 52, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      color: var(--text-primary);
+      outline: none;
+      font-size: 0.92rem;
+    }
+
+    .secondary-input::placeholder { color: var(--text-muted); }
+
+    .toggle-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.85rem 1rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(26, 34, 52, 0.95);
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .toggle-chip input { accent-color: var(--accent); }
 
     .loading-container {
       display: flex;
@@ -294,6 +323,143 @@
 
     .rec-confidence { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
     .rec-rationale { font-size: 0.88rem; color: var(--text-secondary); margin: 0.75rem 0; line-height: 1.5; }
+
+    .chat-session {
+      margin-top: 1rem;
+      border-top: 1px solid var(--border);
+      padding-top: 1rem;
+    }
+
+    .chat-session-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .chat-session-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .chat-session-badge {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.18rem 0.55rem;
+    }
+
+    .chat-history {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .chat-history-empty {
+      padding: 0.85rem 1rem;
+      border-radius: 10px;
+      border: 1px dashed var(--border);
+      color: var(--text-secondary);
+      font-size: 0.84rem;
+    }
+
+    .chat-turn {
+      border-radius: 12px;
+      padding: 0.85rem 1rem;
+      border: 1px solid var(--border);
+      background: rgba(17, 24, 39, 0.7);
+    }
+
+    .chat-turn.user {
+      border-color: rgba(59, 130, 246, 0.35);
+      background: rgba(29, 78, 216, 0.1);
+    }
+
+    .chat-turn.assistant {
+      border-color: rgba(34, 197, 94, 0.25);
+    }
+
+    .chat-turn-role {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 0.35rem;
+      color: var(--text-secondary);
+    }
+
+    .chat-turn-content {
+      font-size: 0.88rem;
+      color: var(--text-primary);
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+
+    .chat-citations {
+      margin-top: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .chat-citation {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      padding: 0.55rem 0.75rem;
+      border-radius: 8px;
+      background: rgba(6, 182, 212, 0.08);
+      border: 1px solid rgba(6, 182, 212, 0.18);
+    }
+
+    .chat-compose {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.75rem;
+      align-items: start;
+      margin-top: 1rem;
+    }
+
+    .chat-compose textarea {
+      min-height: 88px;
+      resize: vertical;
+      background: rgba(17, 24, 39, 0.92);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.9rem 1rem;
+      color: var(--text-primary);
+      outline: none;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      font-family: inherit;
+    }
+
+    .chat-compose textarea::placeholder { color: var(--text-muted); }
+
+    .chat-send-btn {
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 0.9rem 1.2rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      min-width: 120px;
+      transition: transform 0.2s, opacity 0.2s;
+    }
+
+    .chat-send-btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .chat-send-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .chat-error {
+      margin-top: 0.75rem;
+      font-size: 0.82rem;
+      color: #fca5a5;
+    }
 
     .rec-pros-cons {
       display: grid;
@@ -568,6 +734,7 @@
       .nav-status { margin-left: 0; padding-bottom: 1rem; }
       .main { padding: 1rem; }
       .rec-pros-cons { grid-template-columns: 1fr; }
+      .chat-compose { grid-template-columns: 1fr; }
       .sources-grid { grid-template-columns: 1fr; }
       .arch-nodes { flex-direction: column; align-items: center; }
       .arch-arrow { transform: rotate(90deg); }
@@ -608,11 +775,17 @@
               <circle cx="11" cy="11" r="8"></circle>
               <path d="m21 21-4.35-4.35"></path>
             </svg>
-            <input id="query-input" class="search-input" placeholder="What are you shopping for?" autocomplete="off" />
-            <button id="search-button" class="search-btn" type="button">Search</button>
+            <input id="query-input" class="search-input" placeholder="Paste a YouTube review URL or enter a shopping query" autocomplete="off" />
+            <button id="search-button" class="search-btn" type="button">Analyze</button>
+          </div>
+          <div class="search-options">
+            <input id="chat-input" class="secondary-input" placeholder="Optional follow-up question for the transcript" autocomplete="off" />
+            <label class="toggle-chip">
+              <input id="similar-toggle" type="checkbox" checked />
+              Find similar products
+            </label>
           </div>
           <div style="margin-top: 0.85rem; font-size: 0.82rem; color: var(--text-secondary);">
-            Want to watch the orchestration live? <a class="trace-link" href="/trace">Open Live Trace</a>
           </div>
         </div>
 
@@ -626,9 +799,10 @@
 
         <div id="results-container" class="hidden">
           <div class="results-header">
-            <h2>Recommendations</h2>
+            <h2>Results</h2>
             <span id="results-meta" class="results-meta"></span>
           </div>
+          <div id="video-analysis-panel" class="hidden"></div>
           <div id="recommendations-list"></div>
           <div id="sources-section" class="sources-section hidden">
             <h3 id="sources-title">Sources</h3>
@@ -638,9 +812,9 @@
 
         <div id="empty-state" class="empty-state">
           <div class="empty-state-badge">FMAS</div>
-          <p>Enter a shopping query to get AI-powered recommendations.</p>
+          <p>Paste a YouTube product review URL to analyze the transcript, chat with the video, and find similar products.</p>
           <p style="font-size: 0.82rem; margin-top: 0.5rem;">
-            Powered by federated agents with the A2A protocol and LangGraph orchestration.
+            Legacy shopping queries still work, but the main demo path is now YouTube-first to match the assignment PDF.
           </p>
         </div>
       </section>
@@ -649,8 +823,8 @@
         <div class="features-hero">
           <h1>Federated Multi-Agent System</h1>
           <p>
-            The orchestrator discovers agents through A2A, executes Product Discovery through MCP,
-            finalizes a shortlist first, and only then fans out YouTube review analysis.
+            The orchestrator discovers both agents through A2A, delegates YouTube review URL analysis first,
+            and lets the YouTube agent trigger Product Discovery through MCP when similar products are requested.
           </p>
         </div>
 
@@ -662,7 +836,7 @@
             <div class="arch-node orchestrator">
               <h4>Central Orchestrator</h4>
               <p>LangGraph StateGraph</p>
-              <p>Routing, synthesis, and live trace runs</p>
+          <p>Routing, synthesis, and grounded agent responses</p>
               <div class="port">:8000</div>
               <div class="arch-label">FastAPI</div>
             </div>
@@ -670,15 +844,15 @@
             <div style="display: flex; gap: 2rem; flex-wrap: wrap; justify-content: center;">
               <div class="arch-node product">
                 <h4>Product Discovery</h4>
-                <p>DuckDuckGo + Web Enrichment</p>
-                <p>URL grounding + MCP + debug snapshots</p>
+                <p>MCP + Mock Product Catalog</p>
+                <p>Structured similar-product lookup</p>
                 <div class="port">:5002</div>
                 <div class="arch-label">A2A + MCP</div>
               </div>
               <div class="arch-node youtube">
                 <h4>YouTube Review</h4>
-                <p>Data API v3 + Transcripts</p>
-                <p>Video ranking, transcript evidence, summary</p>
+                <p>URL validation + transcript extraction</p>
+                <p>Grounded chat, product extraction, MCP trigger</p>
                 <div class="port">:5001</div>
                 <div class="arch-label">A2A</div>
               </div>
@@ -702,30 +876,30 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Route Tasks</h4>
-                <p>GPT-4o-mini interprets the query once, and the orchestrator then assembles routes deterministically from the discovered services and the structured query understanding.</p>
+                <p>The orchestrator keeps a YouTube-first path for review URLs and a legacy shopping-query path for compatibility, while still assembling routes deterministically from discovered services.</p>
               </div>
             </div>
             <div class="pipeline-step step-3">
               <div class="step-marker">3</div>
               <div class="step-line"></div>
               <div class="step-content">
-                <h4>Execute Product Discovery</h4>
-                <p>Invoke the MCP <code>search_products</code> tool on the discovered Product Discovery service. The agent expands the query, gathers evidence, finalizes up to three real products, and prefers better grounded product links when it can upgrade them.</p>
+                <h4>Execute YouTube Analysis</h4>
+                <p>The YouTube agent validates the review URL, extracts transcript evidence, indexes transcript chunks for grounded retrieval, and extracts structured product details from the video.</p>
               </div>
             </div>
             <div class="pipeline-step step-4">
               <div class="step-marker">4</div>
               <div class="step-line"></div>
               <div class="step-content">
-                <h4>Execute YouTube Reviews</h4>
-                <p>Only finalized shortlist items are sent to the YouTube Review agent. It selects videos, extracts transcript evidence, builds sentiment-backed summaries, and publishes live review trace updates.</p>
+                <h4>MCP Similar Products</h4>
+                <p>If the user asks for similar products, the YouTube agent calls Product Discovery over MCP with a structured payload and receives stable catalog-style JSON back.</p>
               </div>
             </div>
             <div class="pipeline-step step-5">
               <div class="step-marker">5</div>
               <div class="step-content">
                 <h4>Synthesize</h4>
-                <p>GPT-4o-mini merges finalized product data and review evidence into a ranked response with explicit sources, while the orchestrator keeps partial-result handling and live trace visibility intact.</p>
+                <p>The orchestrator returns one unified response containing video metadata, transcript/indexing status, extracted product details, optional chat answers, similar products, and explicit source links.</p>
               </div>
             </div>
           </div>
@@ -736,19 +910,19 @@
           <div class="feature-grid">
             <div class="feature-card">
               <h4><span class="feature-icon">R</span> Structured Routing</h4>
-              <p>The query is understood once with GPT-4o-mini, then the orchestrator assembles downstream routes deterministically so execution stays predictable.</p>
+              <p>YouTube review URLs take the primary path directly to the YouTube agent, while the legacy shopping query path still uses one LLM understanding step and deterministic route assembly.</p>
             </div>
             <div class="feature-card">
-              <h4><span class="feature-icon">U</span> URL Grounding</h4>
-              <p>Every product link in the final response traces back to agent-retrieved evidence before it is surfaced to the user.</p>
+              <h4><span class="feature-icon">R</span> Transcript RAG</h4>
+              <p>Transcript chunks are indexed so the user can chat with the review video using grounded retrieval instead of a free-form summary only.</p>
             </div>
             <div class="feature-card">
               <h4><span class="feature-icon">T</span> Testable Graph</h4>
               <p><code>run_query()</code> accepts injected clients, which keeps orchestration testable without live downstream services.</p>
             </div>
             <div class="feature-card">
-              <h4><span class="feature-icon">P</span> Bounded Parallelism</h4>
-              <p>YouTube review fan-out is capped to avoid overwhelming the downstream agent while still keeping multi-product queries responsive.</p>
+              <h4><span class="feature-icon">M</span> MCP Handoff</h4>
+              <p>The orchestrator resolves the Product Discovery MCP endpoint from A2A discovery and passes it down so the YouTube agent can trigger similar-product lookup without hardcoded endpoints.</p>
             </div>
             <div class="feature-card">
               <h4><span class="feature-icon">G</span> Graceful Degradation</h4>
@@ -756,11 +930,11 @@
             </div>
             <div class="feature-card">
               <h4><span class="feature-icon">S</span> Structured Output</h4>
-              <p>Pydantic models and JSON schemas validate the final recommendation payload before it is rendered to the user.</p>
+              <p>Pydantic models and JSON schemas validate transcript-derived product details, similar-product responses, and the final unified payload before rendering.</p>
             </div>
             <div class="feature-card">
-              <h4><span class="feature-icon">L</span> Live Traceability</h4>
-              <p>A traced query records discovery, shortlist formation, review fan-out, transcript evidence, and the final grounded response in real time.</p>
+        <h4><span class="feature-icon">L</span> Grounded Responses</h4>
+        <p>The app keeps responses tied to transcript evidence, MCP product lookup results, and explicit source links shown back to the user.</p>
             </div>
           </div>
         </div>
@@ -774,7 +948,7 @@
             </div>
             <div class="protocol-card">
               <h4>MCP</h4>
-              <p>Product Discovery is discovered through A2A, then executed through its MCP <code>search_products</code> endpoint on the running service instance, with A2A retained as a resilient fallback path.</p>
+              <p>Product Discovery is discovered through A2A, then the YouTube agent calls its MCP <code>find_similar_products</code> tool with a structured payload when similar products are requested.</p>
             </div>
             <div class="protocol-card">
               <h4>LangGraph</h4>
@@ -785,8 +959,8 @@
               <p>The shared transport layer validates the <code>jsonrpc</code> field strictly and returns protocol-correct errors for malformed envelopes.</p>
             </div>
             <div class="protocol-card">
-              <h4>Trace API</h4>
-              <p>The orchestrator exposes traced runs through REST endpoints so the frontend can poll live snapshots of agent progress, debug artifacts, and the final response.</p>
+        <h4>Unified API</h4>
+        <p>The orchestrator exposes one response surface that merges video analysis, transcript chat, structured product details, and similar products into a single result.</p>
             </div>
           </div>
         </div>
@@ -800,6 +974,10 @@
         loading: false,
         elapsed: 0,
         result: null,
+        sessionId: null,
+        sessionDraft: "",
+        sessionChatPending: false,
+        sessionChatError: "",
         error: "",
         systemStatus: "loading",
         systemLabel: "Checking system",
@@ -807,10 +985,11 @@
 
       const loadingSteps = [
         { label: "Discovering agents", t: 0 },
-        { label: "Routing query", t: 1 },
-        { label: "Searching products", t: 2 },
-        { label: "Fetching YouTube reviews", t: 5 },
-        { label: "Synthesizing recommendations", t: 15 },
+        { label: "Delegating video analysis", t: 1 },
+        { label: "Extracting transcript", t: 3 },
+        { label: "Indexing transcript", t: 6 },
+        { label: "Looking up similar products", t: 9 },
+        { label: "Synthesizing response", t: 12 },
       ];
 
       let timerId = null;
@@ -818,6 +997,8 @@
 
       const elements = {
         queryInput: document.getElementById("query-input"),
+        chatInput: document.getElementById("chat-input"),
+        similarToggle: document.getElementById("similar-toggle"),
         searchButton: document.getElementById("search-button"),
         loadingContainer: document.getElementById("loading-container"),
         loadingSteps: document.getElementById("loading-steps"),
@@ -825,6 +1006,7 @@
         partialBanner: document.getElementById("partial-banner"),
         resultsContainer: document.getElementById("results-container"),
         resultsMeta: document.getElementById("results-meta"),
+        videoAnalysisPanel: document.getElementById("video-analysis-panel"),
         recommendationsList: document.getElementById("recommendations-list"),
         sourcesSection: document.getElementById("sources-section"),
         sourcesTitle: document.getElementById("sources-title"),
@@ -836,6 +1018,10 @@
         statusLabel: document.getElementById("status-label"),
         navTabs: Array.from(document.querySelectorAll(".nav-tab")),
       };
+
+      function isYouTubeUrl(value) {
+        return /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(value || "");
+      }
 
       function escapeHtml(value) {
         return String(value ?? "")
@@ -920,7 +1106,9 @@
         if (!Array.isArray(recommendations) || recommendations.length === 0) {
           elements.recommendationsList.innerHTML = `
             <div class="empty-card">
-              No ranked products were returned for this query.
+              ${state.result && state.result.mode === "youtube_video"
+                ? "No similar products were returned for this video analysis."
+                : "No ranked products were returned for this query."}
             </div>
           `;
           return;
@@ -980,6 +1168,143 @@
             `;
           })
           .join("");
+      }
+
+      function renderVideoAnalysis(result) {
+        if (!result || result.mode !== "youtube_video") {
+          elements.videoAnalysisPanel.classList.add("hidden");
+          elements.videoAnalysisPanel.innerHTML = "";
+          return;
+        }
+
+        const video = result.video || {};
+        const extracted = result.extracted_product || {};
+        const chat = result.chat_response || null;
+        const sessionId = result.session_id || state.sessionId || (chat && chat.session_id) || null;
+        const history = Array.isArray(chat && chat.history) ? chat.history : [];
+        const similarCount = Array.isArray(result.recommendations) ? result.recommendations.length : 0;
+        const featureHtml = Array.isArray(extracted.features) && extracted.features.length
+          ? `<div class="rec-meta" style="margin-top:.65rem">${extracted.features.map((item) => `<span class="rec-meta-item">${escapeHtml(item)}</span>`).join("")}</div>`
+          : "";
+        const historyHtml = history.length
+          ? history.map((turn) => `
+              <div class="chat-turn ${escapeHtml(turn.role || "assistant")}">
+                <div class="chat-turn-role">${escapeHtml(turn.role || "assistant")}</div>
+                <div class="chat-turn-content">${escapeHtml(turn.content || "")}</div>
+              </div>
+            `).join("")
+          : `<div class="chat-history-empty">Ask a follow-up question to keep a transcript-grounded conversation going for this video.</div>`;
+        const citationsHtml = chat && Array.isArray(chat.citations) && chat.citations.length
+          ? `<div class="chat-citations">${chat.citations.map((item) => `<div class="chat-citation">${escapeHtml(item)}</div>`).join("")}</div>`
+          : "";
+        const sessionChatHtml = sessionId
+          ? `
+            <div class="rec-card" style="margin-bottom:1rem;">
+              <div class="chat-session">
+                <div class="chat-session-header">
+                  <div class="chat-session-title">Transcript Conversation</div>
+                  <div class="chat-session-badge">Session ${escapeHtml(String(sessionId).slice(0, 8))}</div>
+                </div>
+                <div class="chat-history">${historyHtml}</div>
+                ${citationsHtml}
+                <div class="chat-compose">
+                  <textarea id="session-chat-input" placeholder="Ask another question about this review transcript...">${escapeHtml(state.sessionDraft)}</textarea>
+                  <button id="session-chat-button" class="chat-send-btn" type="button" ${state.sessionChatPending ? "disabled" : ""}>
+                    ${state.sessionChatPending ? "Sending..." : "Ask Transcript"}
+                  </button>
+                </div>
+                ${state.sessionChatError ? `<div class="chat-error">${escapeHtml(state.sessionChatError)}</div>` : ""}
+              </div>
+            </div>
+          `
+          : "";
+
+        elements.videoAnalysisPanel.innerHTML = `
+          <div class="rec-card" style="margin-bottom:1rem;">
+            <div class="rec-top">
+              <div class="rec-info">
+                <div class="rec-name">${escapeHtml(video.title || result.youtube_url || "YouTube review analysis")}</div>
+                <div class="rec-meta">
+                  ${video.channel ? `<span class="rec-meta-item">${escapeHtml(video.channel)}</span>` : ""}
+                  ${result.transcript_status ? `<span class="rec-meta-item">Transcript: ${escapeHtml(result.transcript_status)}</span>` : ""}
+                  ${result.indexing_status ? `<span class="rec-meta-item">Index: ${escapeHtml(result.indexing_status)}</span>` : ""}
+                </div>
+              </div>
+              ${similarCount ? `<div class="rec-score-wrap"><div class="rec-score">${escapeHtml(String(similarCount))}</div><div class="rec-confidence">similar products</div></div>` : ""}
+            </div>
+            ${extracted.product_name ? `<div class="rec-rationale"><strong>Extracted product:</strong> ${escapeHtml(extracted.product_name)}${extracted.category ? ` (${escapeHtml(extracted.category)})` : ""}</div>` : ""}
+            ${extracted.summary ? `<div class="rec-rationale" style="margin-top:.65rem;">${escapeHtml(extracted.summary)}</div>` : ""}
+            ${featureHtml}
+          </div>
+          ${sessionChatHtml}
+        `;
+        elements.videoAnalysisPanel.classList.remove("hidden");
+        bindSessionChatActions();
+      }
+
+      function bindSessionChatActions() {
+        const input = elements.videoAnalysisPanel.querySelector("#session-chat-input");
+        const button = elements.videoAnalysisPanel.querySelector("#session-chat-button");
+        if (!input || !button) {
+          return;
+        }
+
+        input.addEventListener("input", (event) => {
+          state.sessionDraft = event.target.value;
+        });
+
+        input.addEventListener("keydown", (event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+            event.preventDefault();
+            void sendSessionChat();
+          }
+        });
+
+        button.addEventListener("click", () => {
+          void sendSessionChat();
+        });
+      }
+
+      async function sendSessionChat() {
+        const sessionId = state.sessionId || (state.result && state.result.session_id);
+        const message = state.sessionDraft.trim();
+        if (!sessionId || !message || state.sessionChatPending) {
+          return;
+        }
+
+        state.sessionChatPending = true;
+        state.sessionChatError = "";
+        renderPageState();
+
+        try {
+          const response = await fetch("/video/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: sessionId,
+              chat_message: message,
+            }),
+          });
+
+          if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`Transcript chat failed with ${response.status}: ${detail}`);
+          }
+
+          const chatResponse = await response.json();
+          state.sessionId = chatResponse.session_id || sessionId;
+          state.sessionDraft = "";
+          state.result = {
+            ...(state.result || {}),
+            session_id: chatResponse.session_id || sessionId,
+            chat_response: chatResponse,
+          };
+        } catch (error) {
+          state.sessionChatError = error instanceof Error ? error.message : "Unexpected transcript chat error";
+        } finally {
+          state.sessionChatPending = false;
+          renderPageState();
+        }
       }
 
       function renderSources(sources) {
@@ -1043,17 +1368,24 @@
         }
 
         elements.searchButton.disabled = state.loading || !elements.queryInput.value.trim();
-        elements.searchButton.textContent = state.loading ? "Searching..." : "Search";
+        elements.searchButton.textContent = state.loading ? "Working..." : "Analyze";
         elements.queryInput.disabled = state.loading;
+        elements.chatInput.disabled = state.loading;
+        elements.similarToggle.disabled = state.loading;
 
         if (showResults) {
           const recommendations = Array.isArray(state.result.recommendations) ? state.result.recommendations : [];
           const sources = Array.isArray(state.result.sources) ? state.result.sources : [];
-          elements.resultsMeta.textContent = `${recommendations.length} products | ${sources.length} sources`;
+          elements.resultsMeta.textContent = state.result.mode === "youtube_video"
+            ? `${recommendations.length} similar products | ${sources.length} sources`
+            : `${recommendations.length} products | ${sources.length} sources`;
+          renderVideoAnalysis(state.result);
           renderRecommendations(recommendations);
           renderSources(sources);
         } else {
           elements.resultsMeta.textContent = "";
+          elements.videoAnalysisPanel.innerHTML = "";
+          elements.videoAnalysisPanel.classList.add("hidden");
           elements.recommendationsList.innerHTML = "";
           elements.sourcesGrid.innerHTML = "";
           elements.sourcesSection.classList.add("hidden");
@@ -1106,6 +1438,10 @@
         state.loading = true;
         state.elapsed = 0;
         state.result = null;
+        state.sessionId = null;
+        state.sessionDraft = "";
+        state.sessionChatPending = false;
+        state.sessionChatError = "";
         state.error = "";
         renderPageState();
 
@@ -1115,10 +1451,17 @@
         }, 1000);
 
         try {
+          const payload = isYouTubeUrl(submittedQuery)
+            ? {
+                youtube_url: submittedQuery,
+                chat_message: elements.chatInput.value.trim() || null,
+                find_similar_products: Boolean(elements.similarToggle.checked),
+              }
+            : { query: submittedQuery };
           const response = await fetch("/query", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: submittedQuery }),
+            body: JSON.stringify(payload),
           });
 
           if (!response.ok) {
@@ -1127,6 +1470,7 @@
           }
 
           state.result = await response.json();
+          state.sessionId = state.result.session_id || (state.result.chat_response && state.result.chat_response.session_id) || null;
         } catch (error) {
           state.error = error instanceof Error ? error.message : "Unexpected frontend error";
         } finally {
@@ -1151,6 +1495,12 @@
 
         elements.queryInput.addEventListener("input", () => {
           elements.searchButton.disabled = state.loading || !elements.queryInput.value.trim();
+        });
+        elements.chatInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void runSearch();
+          }
         });
 
         elements.navTabs.forEach((tab) => {
