@@ -1,5 +1,9 @@
 # Federated Multi-Agent System
 
+## Demo
+
+- Demo video: [https://youtu.be/zl8-YQSKATU](https://youtu.be/zl8-YQSKATU)
+
 A PDF-aligned federated multi-agent demo built with:
 
 - `A2A` for agent discovery and task delegation
