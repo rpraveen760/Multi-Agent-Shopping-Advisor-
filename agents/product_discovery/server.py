@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from agents.product_discovery.agent import search_products
 from common.a2a_models import (
