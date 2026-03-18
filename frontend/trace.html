@@ -170,7 +170,7 @@
 
   <script>
     (() => {
-      const hints = ["LG UltraGear GX9", "best wireless earbuds under 100", "top rated laptop for students 2025", "best gaming monitor under 1500"];
+      const hints = ["RTX 5070", "Ryzen 9 9950", "Razer Cobra Gaming Mouse", "Wacom Cintiq 16"];
       const state = { runId: "", snapshot: null, starting: false, error: "" };
       let timer = null;
       const el = {
@@ -208,10 +208,12 @@
       function buildStages(snapshot) {
         const routing = snapshot.routing || {};
         const reviews = Object.values(snapshot.review_traces || {});
+        const productStage = snapshot.product_trace ? (snapshot.product_trace.stage || "") : "";
+        const productDone = productStage === "normalization-complete" || productStage === "mcp-complete";
         return [
           { label: "Discovery", state: arr(snapshot.discovered_agents).length ? "done" : snapshot.status === "failed" ? "error" : "active" },
           { label: "Routing", state: snapshot.routing ? "done" : snapshot.status === "failed" ? "error" : "waiting" },
-          { label: "Products", state: snapshot.product_trace ? (snapshot.product_trace.stage === "normalization-complete" ? "done" : "active") : routing.needs_product_discovery ? (snapshot.status === "failed" ? "error" : "waiting") : "waiting" },
+          { label: "Products", state: snapshot.product_trace ? (productDone ? "done" : "active") : routing.needs_product_discovery ? (snapshot.status === "failed" ? "error" : "waiting") : "waiting" },
           { label: "Reviews", state: reviews.length ? (reviews.every((item) => item.stage === "summary-complete") ? "done" : "active") : routing.needs_youtube_reviews ? (snapshot.status === "failed" ? "error" : "waiting") : "waiting" },
           { label: "Synthesis", state: snapshot.final_response ? (snapshot.status === "failed" ? "error" : "done") : snapshot.synthesis ? "active" : "waiting" },
         ];
@@ -251,8 +253,60 @@
       function renderProduct(snapshot) {
         const trace = snapshot.product_trace;
         const cards = (list, render, empty) => list.length ? `<div class="items">${list.map(render).join("")}</div>` : `<div class="empty">${empty}</div>`;
+        const pills = (list, empty) => list.length ? `<div class="pills">${list.map((item) => `<span class="pill">${esc(item)}</span>`).join("")}</div>` : `<div class="empty">${empty}</div>`;
         if (!trace) { el.product.innerHTML = '<div class="empty">Product discovery trace data will appear here once the agent starts publishing snapshots.</div>'; return; }
-        el.product.innerHTML = `<div class="pills"><span class="pill">Stage: ${esc(trace.stage || "unknown")}</span><span class="pill">Search query: ${esc(trace.search_query || "n/a")}</span></div><div><div class="section">Raw Search Candidates</div>${cards(arr(trace.candidates), (c) => `<div class="mini"><h3>${esc(c.title || "Untitled result")}</h3><p>${esc(c.snippet || "No snippet")}</p><ul><li><strong>Merchant:</strong> ${esc(c.merchant || "unknown")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul></div>`, "Waiting for candidate URLs...")}</div><div><div class="section">Enriched Candidates</div>${cards(arr(trace.enriched_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><ul><li><strong>Price:</strong> ${esc(c.price || "N/A")}</li><li><strong>Rating:</strong> ${esc(c.rating || "N/A")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul>${c.page_excerpt ? `<div class="excerpt">${esc(c.page_excerpt)}</div>` : ""}</div>`, "Waiting for enrichment data...")}</div><div><div class="section">Normalized Products</div>${cards(arr(trace.normalized_products), (p) => `<div class="mini"><h3>${esc(p.name || "Unnamed product")}</h3><div class="pills">${p.price ? `<span class="pill">${esc(p.price)}</span>` : ""}${p.rating ? `<span class="pill">${esc(p.rating)}</span>` : ""}<span class="pill">${esc(p.source || "unknown source")}</span></div><p style="margin-top:.35rem"><a href="${esc(toUrl(p.url))}" target="_blank" rel="noopener noreferrer">${esc(p.url || "")}</a></p>${arr(p.key_features).length ? `<ul>${arr(p.key_features).map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}</div>`, "Waiting for normalized product output...")}</div>${trace.summary ? `<div class="summary"><div class="section" style="color:#d7deff;margin-bottom:.35rem">Agent Summary</div><div class="note">${esc(trace.summary)}</div></div>` : ""}`;
+        const mcpMode = trace.stage === "mcp-complete" || trace.interface === "mcp";
+        const candidateEntities = arr(trace.candidate_entities);
+        const finalizedProducts = arr(trace.finalized_products).length ? arr(trace.finalized_products) : arr(trace.normalized_products);
+        const rejectedEntities = arr(trace.rejected_entities).length ? arr(trace.rejected_entities) : arr(trace.rejected_generic_products);
+        const candidateEmpty = mcpMode ? "The MCP tool returned shortlist-ready products for this run." : "Waiting for candidate URLs...";
+        const enrichmentEmpty = mcpMode ? "The MCP tool returned shortlist-ready products for this run." : "Waiting for enrichment data...";
+        const filteredEmpty = mcpMode ? "Waiting for shortlist scoring details from the MCP tool..." : "Waiting for shortlist filtering...";
+        const reviewTargetNames = arr(trace.review_targets);
+        el.product.innerHTML = `
+          <div class="pills">
+            <span class="pill">Stage: ${esc(trace.stage || "unknown")}</span>
+            <span class="pill">Search query: ${esc(trace.search_query || "n/a")}</span>
+            <span class="pill">Candidates: ${esc(trace.candidate_count ?? arr(trace.candidates).length)}</span>
+          </div>
+          <div>
+            <div class="section">Expanded Search Queries</div>
+            ${pills(arr(trace.search_queries), "Waiting for expanded retrieval queries...")}
+          </div>
+          <div>
+            <div class="section">Raw Search Candidates</div>
+            ${cards(arr(trace.candidates), (c) => `<div class="mini"><h3>${esc(c.title || "Untitled result")}</h3><p>${esc(c.snippet || "No snippet")}</p><ul><li><strong>Merchant:</strong> ${esc(c.merchant || "unknown")}</li><li><strong>Matched query:</strong> ${esc(c.matched_query || "n/a")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul></div>`, candidateEmpty)}
+          </div>
+          <div>
+            <div class="section">Enriched Candidates</div>
+            ${cards(arr(trace.enriched_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><ul><li><strong>Price:</strong> ${esc(c.price || "N/A")}</li><li><strong>Rating:</strong> ${esc(c.rating || "N/A")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul>${c.page_excerpt ? `<div class="excerpt">${esc(c.page_excerpt)}</div>` : ""}</div>`, enrichmentEmpty)}
+          </div>
+          <div>
+            <div class="section">Filtered Shortlist Candidates</div>
+            ${cards(arr(trace.filtered_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><div class="pills"><span class="pill">Score: ${esc(c.shortlist_score ?? "n/a")}</span>${c.price ? `<span class="pill">${esc(c.price)}</span>` : ""}${c.rating ? `<span class="pill">${esc(c.rating)}</span>` : ""}</div><p style="margin-top:.45rem">${esc(arr(c.shortlist_reasons).join(" • ") || "No shortlist reasons captured")}</p><p style="margin-top:.35rem"><a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></p></div>`, filteredEmpty)}
+          </div>
+          <div>
+            <div class="section">Candidate Entities</div>
+            ${cards(candidateEntities, (entity) => `<div class="mini"><h3>${esc(entity.name || "Unnamed entity")}</h3><div class="pills"><span class="pill">Support: ${esc(entity.support ?? 0)}</span><span class="pill">Detail pages: ${esc(entity.product_page_support ?? 0)}</span>${entity.price_support ? `<span class="pill">Prices: ${esc(entity.price_support)}</span>` : ""}</div><p style="margin-top:.35rem">${esc(arr(entity.candidate_urls).slice(0, 2).join(" â€¢ ") || "No URLs captured")}</p></div>`, "Waiting for clustered candidate entities...")}
+          </div>
+          <div>
+            <div class="section">Finalized Products</div>
+            ${cards(finalizedProducts, (p) => `<div class="mini"><h3>${esc(p.name || "Unnamed product")}</h3><div class="pills">${p.price ? `<span class="pill">${esc(p.price)}</span>` : ""}${p.rating ? `<span class="pill">${esc(p.rating)}</span>` : ""}<span class="pill">${esc(p.source || "unknown source")}</span></div><p style="margin-top:.35rem"><a href="${esc(toUrl(p.url))}" target="_blank" rel="noopener noreferrer">${esc(p.url || "")}</a></p>${arr(p.key_features).length ? `<ul>${arr(p.key_features).map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}</div>`, "Waiting for finalized product output...")}
+          </div>
+          <div>
+            <div class="section">Shortlist Reasons</div>
+            ${cards(arr(trace.shortlist_reasons), (item) => `<div class="mini"><h3>${esc(item.product_name || "Product")}</h3><div class="pills">${item.confidence != null ? `<span class="pill">Confidence: ${esc(item.confidence)}</span>` : ""}${arr(item.evidence_urls).length ? `<span class="pill">Evidence: ${esc(arr(item.evidence_urls).length)}</span>` : ""}</div><p style="margin-top:.45rem">${esc(arr(item.reasons).join(" • ") || "No shortlist reasons captured")}</p></div>`, "Waiting for final shortlist reasons...")}
+          </div>
+          <div>
+            <div class="section">Rejected Entities</div>
+            ${cards(rejectedEntities, (item) => `<div class="mini"><h3>${esc(item.name || "Unnamed candidate")}</h3><p>${esc(item.reason || "Rejected during concrete-product gating")}</p></div>`, "No generic outputs were rejected for this run.")}
+          </div>
+          <div>
+            <div class="section">Sent To YouTube Review</div>
+            ${pills(reviewTargetNames, "Review targets will appear here after shortlist selection.")}
+          </div>
+          ${trace.summary ? `<div class="summary"><div class="section" style="color:#d7deff;margin-bottom:.35rem">Agent Summary</div><div class="note">${esc(trace.summary)}</div></div>` : ""}
+        `;
       }
 
       function renderReviews(snapshot) {

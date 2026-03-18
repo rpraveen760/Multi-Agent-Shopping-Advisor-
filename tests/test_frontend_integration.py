@@ -59,12 +59,18 @@ class FrontendIntegrationTests(unittest.TestCase):
             name="Product Discovery Agent",
             url="http://localhost:5002/a2a/v1",
             description="Product search",
+            additionalInterfaces=[
+                SimpleNamespace(url="http://localhost:5002/mcp", transport="MCP")
+            ],
             skills=[],
         )
 
         with patch("agents.orchestrator.server.get_settings", return_value=settings), patch(
             "agents.orchestrator.server.A2AClient",
             return_value=_FakeClient([product_card, RuntimeError("boom")]),
+        ), patch(
+            "agents.orchestrator.server._verify_product_discovery_mcp",
+            return_value=(True, None),
         ):
             response = self.client.get("/status")
 
@@ -73,6 +79,43 @@ class FrontendIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(payload["available_agents"], 1)
         self.assertEqual(payload["total_agents"], 2)
+
+    def test_status_endpoint_degrades_when_product_mcp_is_unavailable(self):
+        settings = SimpleNamespace(
+            PRODUCT_AGENT_CARD_URL="http://localhost:5002/.well-known/agent-card.json",
+            YOUTUBE_AGENT_CARD_URL="http://localhost:5001/.well-known/agent-card.json",
+        )
+        product_card = SimpleNamespace(
+            name="Product Discovery Agent",
+            url="http://localhost:5002/a2a/v1",
+            description="Product search",
+            additionalInterfaces=[
+                SimpleNamespace(url="http://localhost:5002/mcp", transport="MCP")
+            ],
+            skills=[],
+        )
+        youtube_card = SimpleNamespace(
+            name="YouTube Product Review Agent",
+            url="http://localhost:5001/a2a/v1",
+            description="Review search",
+            skills=[],
+        )
+
+        with patch("agents.orchestrator.server.get_settings", return_value=settings), patch(
+            "agents.orchestrator.server.A2AClient",
+            return_value=_FakeClient([product_card, youtube_card]),
+        ), patch(
+            "agents.orchestrator.server._verify_product_discovery_mcp",
+            return_value=(False, "search_products missing"),
+        ):
+            response = self.client.get("/status")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["available_agents"], 1)
+        self.assertEqual(payload["agents"][0]["status"], "degraded")
+        self.assertIn("MCP unavailable", payload["agents"][0]["description"])
 
 
 if __name__ == "__main__":

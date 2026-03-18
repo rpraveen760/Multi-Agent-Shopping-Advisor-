@@ -153,6 +153,16 @@ class TraceStore:
             snapshot.product_trace = trace
             snapshot.updated_at = _utc_now()
 
+    def merge_product_trace(self, run_id: str, updates: dict[str, Any]) -> None:
+        with self._lock:
+            snapshot = self._runs.get(run_id)
+            if snapshot is None:
+                return
+            current = dict(snapshot.product_trace or {})
+            current.update(updates)
+            snapshot.product_trace = current
+            snapshot.updated_at = _utc_now()
+
     def set_review_trace(self, run_id: str, product_name: str, trace: dict[str, Any]) -> None:
         with self._lock:
             snapshot = self._runs.get(run_id)
@@ -236,12 +246,23 @@ class TraceRecorder:
         )
 
     def set_routing(self, decision: RoutingDecision) -> None:
+        qu = decision.query_understanding
         self.store.set_routing(
             self.run_id,
             {
                 "query": decision.query,
                 "needs_product_discovery": decision.needs_product_discovery,
                 "needs_youtube_reviews": decision.needs_youtube_reviews,
+                "routing_reasoning": decision.routing_reasoning,
+                "query_understanding": {
+                    "original_query": qu.original_query,
+                    "reformulated_query": qu.reformulated_query,
+                    "product_category": qu.product_category,
+                    "budget": qu.budget,
+                    "intent": qu.intent,
+                    "key_terms": qu.key_terms,
+                    "reasoning": qu.reasoning,
+                } if qu else None,
                 "routes": [
                     {
                         "agent_name": route.agent_name,
@@ -257,6 +278,9 @@ class TraceRecorder:
 
     def set_product_trace(self, trace: dict[str, Any]) -> None:
         self.store.set_product_trace(self.run_id, trace)
+
+    def merge_product_trace(self, updates: dict[str, Any]) -> None:
+        self.store.merge_product_trace(self.run_id, updates)
 
     def set_review_trace(self, product_name: str, trace: dict[str, Any]) -> None:
         self.store.set_review_trace(self.run_id, product_name, trace)

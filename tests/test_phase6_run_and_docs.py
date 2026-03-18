@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import run
@@ -96,6 +97,33 @@ class RunScriptTests(unittest.TestCase):
             run._shutdown_all()
 
             self.assertEqual(run._processes, [])
+
+    def test_validate_required_configuration_rejects_placeholder_keys(self):
+        with patch.object(
+            run,
+            "get_settings",
+            return_value=SimpleNamespace(
+                OPENAI_API_KEY="sk-your-openai-key",
+                YOUTUBE_API_KEY="your-youtube-data-api-key",
+            ),
+        ):
+            ok, detail = run._validate_required_configuration()
+
+        self.assertFalse(ok)
+        self.assertIn("OPENAI_API_KEY", detail)
+        self.assertIn("YOUTUBE_API_KEY", detail)
+
+    def test_verify_orchestrator_status_requires_ok_payload(self):
+        fake_response = SimpleNamespace(
+            status_code=200,
+            json=lambda: {"status": "degraded"},
+        )
+
+        with patch.object(run.httpx, "get", return_value=fake_response):
+            ok, detail = run._verify_orchestrator_status()
+
+        self.assertFalse(ok)
+        self.assertIn("degraded", detail)
 
 
 class DocumentationTests(unittest.TestCase):

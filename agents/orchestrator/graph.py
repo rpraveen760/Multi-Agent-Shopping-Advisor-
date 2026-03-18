@@ -4,7 +4,7 @@ Implements the 5-node workflow:
     discover_agents → route_tasks → [execute_product_discovery, execute_youtube_reviews] → synthesize
 
 Key design decisions:
-- Deterministic routing (no LLM for routing).
+- Structured LLM-guided query understanding plus explicit routing.
 - Dependency-injected a2a_client and llm_client for testability.
 - Bounded concurrency for YouTube fan-out via asyncio.Semaphore.
 - Structured UnifiedResponse produced first, then rendered.
@@ -16,8 +16,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import timedelta
 from typing import Any, Callable, TypedDict
+from urllib.parse import quote, urlparse, urlunparse
 
+import httpx
 from langgraph.graph import END, StateGraph
 from openai import AsyncOpenAI
 
@@ -41,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_TASK_STATES = {"completed", "failed", "canceled", "input-required"}
 _TASK_POLL_INTERVAL_SECONDS = 0.25
+_MAX_REVIEW_PRODUCTS = 3
+_MAX_FINAL_RECOMMENDATIONS = 3
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -145,30 +150,50 @@ async def discover_agents(state: OrchestratorState) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════
 
 async def route_tasks(state: OrchestratorState) -> dict[str, Any]:
-    """Apply deterministic routing to determine which agents to call."""
+    """Use LLM to understand the query and route to appropriate agents."""
     query = state["query"]
     discovered = state.get("discovered_agents", {})
     card_urls = state.get("card_urls", {})
+    settings = state["settings"]
+    llm_client = state.get("llm_client")
     trace = state.get("trace_recorder")
 
     if trace:
         trace.add_event(
-            "Routing query",
+            "Understanding query via LLM",
             status="active",
-            detail="Resolving which agents should execute this request.",
+            detail="GPT-4o-mini is interpreting the query and deciding which agents to invoke.",
         )
 
-    decision = route_query(query, discovered, card_urls)
+    decision = await route_query(
+        query, discovered, card_urls,
+        settings=settings,
+        llm_client=llm_client,
+    )
 
     if trace:
         trace.set_routing(decision)
+        qu = decision.query_understanding
+        trace.add_event(
+            "Query understood",
+            status="done",
+            detail=qu.reasoning if qu else "No query understanding available.",
+            data={
+                "reformulated_query": qu.reformulated_query if qu else query,
+                "product_category": qu.product_category if qu else None,
+                "budget": qu.budget if qu else None,
+                "intent": qu.intent if qu else "unknown",
+                "key_terms": qu.key_terms if qu else [],
+            },
+        )
         trace.add_event(
             "Routing complete",
             status="done",
-            detail=f"Resolved {len(decision.routes)} downstream routes.",
+            detail=f"Resolved {len(decision.routes)} downstream routes. {decision.routing_reasoning}",
             data={
                 "needs_product_discovery": decision.needs_product_discovery,
                 "needs_youtube_reviews": decision.needs_youtube_reviews,
+                "routing_reasoning": decision.routing_reasoning,
             },
         )
 
@@ -180,7 +205,7 @@ async def route_tasks(state: OrchestratorState) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════
 
 async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
-    """Call the Product Discovery agent via A2A SendMessage."""
+    """Call Product Discovery via MCP, with A2A fallback for resilience."""
     decision = state.get("routing_decision")
     trace = state.get("trace_recorder")
     errors: list[str] = list(state.get("errors", []))
@@ -199,10 +224,83 @@ async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
         return {"product_result": None, "errors": errors}
 
     try:
-        logger.info("Calling Product Discovery agent: %s", route.agent_url)
+        agent_card = state.get("discovered_agents", {}).get("product-discovery")
+        mcp_url = _resolve_product_mcp_url(agent_card)
+        debug_trace_id = None
+        debug_url = None
+        poll_stop = None
+        poll_task = None
+
+        logger.info("Calling Product Discovery via MCP for query: %s", route.query_text)
+        if trace:
+            debug_trace_id = f"{trace.run_id}-product-discovery"
+            debug_url = _build_product_debug_url(mcp_url, debug_trace_id)
+            poll_stop = asyncio.Event()
+            poll_task = asyncio.create_task(
+                _poll_product_discovery_debug(debug_url, trace, poll_stop)
+            )
+            trace.add_event(
+                "Calling Product Discovery via MCP",
+                status="active",
+                detail="Invoking search_products on the MCP interface.",
+                agent="product-discovery",
+                data={"query_text": route.query_text},
+            )
+
+        try:
+            product_result = await _call_product_discovery_via_mcp(
+                query=route.query_text,
+                settings=state["settings"],
+                agent_card=agent_card,
+                trace=trace,
+                mcp_url=mcp_url,
+                trace_id=debug_trace_id,
+            )
+        finally:
+            latest_trace = None
+            if poll_task and poll_stop and debug_url:
+                poll_stop.set()
+                try:
+                    latest_trace = await poll_task
+                except Exception as exc:
+                    logger.debug("Failed to poll Product Discovery debug progress: %s", exc)
+                await _clear_product_discovery_debug(debug_url)
+
+        logger.info(
+            "Product Discovery returned %d products via MCP",
+            len(product_result.products),
+        )
+        if trace:
+            if latest_trace:
+                trace.set_product_trace(latest_trace)
+            else:
+                trace.set_product_trace(_build_mcp_product_trace(route.query_text, product_result))
+            trace.add_event(
+                "Product discovery completed",
+                status="done",
+                detail=f"Returned {len(product_result.products)} normalized products via MCP.",
+                agent="product-discovery",
+            )
+        return {"product_result": product_result, "errors": errors}
+
+    except Exception as mcp_exc:
+        fallback_msg = f"Product Discovery MCP call failed, falling back to A2A: {mcp_exc}"
+        logger.warning(fallback_msg)
+        errors.append(fallback_msg)
+        if trace:
+            trace.append_error(fallback_msg)
+            trace.add_event(
+                "Product Discovery MCP call failed",
+                status="error",
+                detail=str(mcp_exc),
+                agent="product-discovery",
+            )
+
+    try:
+        logger.info("Falling back to Product Discovery agent over A2A: %s", route.agent_url)
         if trace:
             trace.add_event(
-                "Calling Product Discovery agent",
+                "Falling back to Product Discovery A2A wrapper",
                 status="active",
                 detail=route.agent_url,
                 agent="product-discovery",
@@ -228,12 +326,12 @@ async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
             product_result = _extract_product_result(result)
             if product_result:
                 logger.info(
-                    "Product Discovery returned %d products",
+                    "Product Discovery returned %d products via A2A fallback",
                     len(product_result.products),
                 )
                 if trace:
                     trace.add_event(
-                        "Product discovery completed",
+                        "Product discovery completed via A2A fallback",
                         status="done",
                         detail=f"Returned {len(product_result.products)} normalized products.",
                         agent="product-discovery",
@@ -266,6 +364,171 @@ async def execute_product_discovery(state: OrchestratorState) -> dict[str, Any]:
                 agent="product-discovery",
             )
         return {"product_result": None, "errors": errors}
+
+
+async def _call_product_discovery_via_mcp(
+    query: str,
+    settings: Settings,
+    agent_card: AgentCard | None = None,
+    trace: TraceRecorder | None = None,
+    mcp_url: str | None = None,
+    trace_id: str | None = None,
+) -> ProductDiscoveryResult:
+    """Invoke Product Discovery through its MCP search_products tool."""
+    try:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+    except ImportError as exc:  # pragma: no cover - depends on optional package
+        raise RuntimeError("MCP client dependencies are not installed") from exc
+
+    resolved_mcp_url = mcp_url or _resolve_product_mcp_url(agent_card)
+
+    if trace:
+        trace.add_event(
+            "Resolved Product Discovery MCP interface",
+            status="done",
+            detail=resolved_mcp_url,
+            agent="product-discovery",
+            data={"transport": "streamable-http"},
+        )
+
+    async with streamable_http_client(resolved_mcp_url) as (read_stream, write_stream, _get_session_id):
+        async with ClientSession(
+            read_stream,
+            write_stream,
+            read_timeout_seconds=timedelta(seconds=settings.A2A_CLIENT_TIMEOUT_SECONDS),
+        ) as session:
+            await session.initialize()
+
+            tools = await session.list_tools()
+            if not any(tool.name == "search_products" for tool in tools.tools):
+                raise RuntimeError("Product Discovery MCP server did not advertise search_products")
+
+            result = await session.call_tool(
+                "search_products",
+                {
+                    "query": query,
+                    "max_results": _MAX_FINAL_RECOMMENDATIONS,
+                    **({"trace_id": trace_id} if trace_id else {}),
+                },
+            )
+
+    if result.isError:
+        raise RuntimeError("Product Discovery MCP tool returned an error")
+
+    if result.structuredContent:
+        return ProductDiscoveryResult(**result.structuredContent)
+
+    text_parts = [item.text for item in result.content if getattr(item, "type", None) == "text"]
+    if not text_parts:
+        raise RuntimeError("Product Discovery MCP tool returned no text content")
+
+    return ProductDiscoveryResult(**json.loads(text_parts[0]))
+
+
+def _resolve_product_mcp_url(agent_card: AgentCard | None) -> str:
+    """Resolve the Product Discovery MCP URL from the discovered Agent Card."""
+    if not agent_card or not agent_card.additionalInterfaces:
+        raise RuntimeError("Product Discovery agent card did not advertise an MCP interface")
+
+    for interface in agent_card.additionalInterfaces:
+        if interface.transport.upper() != "MCP":
+            continue
+        if interface.url.startswith(("http://", "https://")):
+            return interface.url
+
+    raise RuntimeError("Product Discovery agent card did not advertise an HTTP MCP interface")
+
+
+def _build_product_debug_url(mcp_url: str, trace_id: str) -> str:
+    """Derive the Product Discovery debug endpoint from the advertised MCP URL."""
+    parsed = urlparse(mcp_url)
+    debug_path = f"/debug/product-discovery/{quote(trace_id, safe='')}"
+    return urlunparse(parsed._replace(path=debug_path, params="", query="", fragment=""))
+
+
+async def _poll_product_discovery_debug(
+    debug_url: str,
+    trace: TraceRecorder,
+    stop_event: asyncio.Event,
+) -> dict[str, Any] | None:
+    """Mirror Product Discovery progress snapshots into the orchestrator trace."""
+    latest_payload: dict[str, Any] | None = None
+
+    async with httpx.AsyncClient(timeout=2) as client:
+        while not stop_event.is_set():
+            payload = await _fetch_product_debug_snapshot(client, debug_url)
+            if payload and payload != latest_payload:
+                latest_payload = payload
+                trace.set_product_trace(payload)
+            await asyncio.sleep(_TASK_POLL_INTERVAL_SECONDS)
+
+        payload = await _fetch_product_debug_snapshot(client, debug_url)
+        if payload and payload != latest_payload:
+            latest_payload = payload
+            trace.set_product_trace(payload)
+
+    return latest_payload
+
+
+async def _fetch_product_debug_snapshot(
+    client: httpx.AsyncClient,
+    debug_url: str,
+) -> dict[str, Any] | None:
+    try:
+        response = await client.get(debug_url)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.debug("Product Discovery debug poll failed: %s", exc)
+        return None
+
+    return response.json()
+
+
+async def _clear_product_discovery_debug(debug_url: str) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            await client.delete(debug_url)
+    except httpx.HTTPError as exc:
+        logger.debug("Failed to clear Product Discovery debug snapshot: %s", exc)
+
+
+def _build_mcp_product_trace(query: str, product_result: ProductDiscoveryResult) -> dict[str, Any]:
+    """Build a compact trace payload when Product Discovery runs through MCP."""
+    finalized_products = [
+        {
+            "name": product.name,
+            "price": product.price,
+            "rating": product.rating,
+            "source": product.source,
+            "url": product.url,
+            "confidence": product.confidence,
+            "key_features": product.key_features[:3],
+            "evidence_urls": product.evidence_urls[:3],
+        }
+        for product in product_result.products
+    ]
+    return {
+        "query": query,
+        "stage": "mcp-complete",
+        "search_query": query,
+        "search_queries": [query],
+        "candidate_count": 0,
+        "candidates": [],
+        "enriched_candidates": [],
+        "candidate_entities": [],
+        "filtered_candidates": [],
+        "normalized_products": finalized_products,
+        "finalized_products": finalized_products,
+        "shortlist_reasons": [],
+        "rejected_generic_products": [],
+        "rejected_entities": [],
+        "review_targets": [],
+        "summary": product_result.summary,
+        "interface": "mcp",
+    }
 
 
 def _extract_product_result(task: Task) -> ProductDiscoveryResult | None:
@@ -321,13 +584,27 @@ async def execute_youtube_reviews(state: OrchestratorState) -> dict[str, Any]:
     if not route:
         return {"review_results": {}, "errors": errors}
 
-    # Determine product names to fetch reviews for
-    product_names: list[str] = []
-    if product_result and product_result.products:
-        product_names = list(dict.fromkeys(p.name for p in product_result.products if p.name))
-    else:
-        # If no products were discovered, use the original query
-        product_names = [state["query"]]
+    product_names = _select_review_targets(product_result)
+    if not product_names:
+        if trace:
+            trace.merge_product_trace({"review_targets": []})
+            trace.add_event(
+                "Skipping YouTube review fan-out",
+                status="done",
+                detail="Product Discovery did not finalize any concrete products to review.",
+                agent="youtube-review",
+            )
+        return {"review_results": {}, "errors": errors}
+
+    if trace and product_result and product_result.products and product_names:
+        trace.merge_product_trace({"review_targets": product_names})
+        trace.add_event(
+            "Selected review targets",
+            status="done",
+            detail=f"Sending {len(product_names)} shortlisted products to YouTube review analysis.",
+            agent="youtube-review",
+            data={"product_names": product_names},
+        )
 
     # Bounded parallel fan-out
     semaphore = asyncio.Semaphore(settings.YOUTUBE_REVIEW_CONCURRENCY)
@@ -428,6 +705,68 @@ def _extract_review_summary(task: Task) -> ReviewSummary | None:
 
 def _extract_review_trace(task: Task) -> dict[str, Any] | None:
     return _extract_named_artifact_json(task, "review-debug")
+
+
+def _normalize_name_key(value: str) -> list[str]:
+    return "".join(ch.lower() if ch.isalnum() else " " for ch in value).split()
+
+
+def _match_known_product_name(
+    candidate_name: str,
+    known_names: list[str],
+) -> str | None:
+    """Resolve a synthesized product name back to a discovered concrete product name."""
+    candidate_tokens = _normalize_name_key(candidate_name)
+    if not candidate_tokens:
+        return None
+
+    candidate_key = " ".join(candidate_tokens)
+    exact = {
+        " ".join(_normalize_name_key(name)): name
+        for name in known_names
+    }
+    if candidate_key in exact:
+        return exact[candidate_key]
+
+    candidate_set = set(candidate_tokens)
+    best_name = None
+    best_score = 0
+    for known_name in known_names:
+        known_tokens = set(_normalize_name_key(known_name))
+        overlap = len(candidate_set & known_tokens)
+        if overlap > best_score:
+            best_score = overlap
+            best_name = known_name
+
+    if best_score >= 2:
+        return best_name
+    return None
+
+
+def _select_review_targets(product_result: ProductDiscoveryResult | None) -> list[str]:
+    """Choose the top concrete products to send through the review pipeline."""
+    if not product_result or not product_result.products:
+        return []
+
+    ordered = sorted(
+        product_result.products,
+        key=lambda product: (
+            -(product.confidence or 0.0),
+            -len(product.evidence_urls),
+            product.name,
+        ),
+    )
+    names: list[str] = []
+    seen: set[str] = set()
+    for product in ordered:
+        key = " ".join(_normalize_name_key(product.name))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        names.append(product.name)
+        if len(names) >= _MAX_REVIEW_PRODUCTS:
+            break
+    return names
 
 
 async def _resolve_send_message_result(
@@ -573,10 +912,11 @@ Your task:
 2. For each product, combine discovery data (price, rating, features) with review data (sentiment, pros, cons) where available.
 3. Assign a composite score (0.0 - 1.0) considering: price-value ratio, ratings, review sentiment, and confidence.
 4. Write a clear rationale for each product's ranking.
-5. Order by score descending (best recommendation first).
-6. If a product has no review data, note that in the rationale and lower the score slightly.
-7. Keep pros and cons to a maximum of 3 each per product, prioritizing the most impactful ones.
-8. NEVER invent data. If something is not in the evidence, do not include it."""
+5. Return 1-3 recommendations only, ordered by score descending.
+6. Use the exact product names from PRODUCT DISCOVERY DATA whenever discovery data is present.
+7. If a product has no review data, note that in the rationale and lower the score slightly.
+8. Keep pros and cons to a maximum of 3 each per product, prioritizing the most impactful ones.
+9. NEVER invent data. If something is not in the evidence, do not include it."""
 
 _SYNTHESIS_SCHEMA = {
     "type": "json_schema",
@@ -660,13 +1000,19 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
         )
 
     if not has_products and not has_reviews:
-        # Nothing to synthesize
+        if requested_products:
+            note = "No concrete products could be finalized from product discovery."
+            if errors:
+                note = note + " " + "; ".join(errors)
+        else:
+            note = "No data was available from any agent. " + "; ".join(errors) if errors else "No data was available from any agent."
+
         unified = UnifiedResponse(
             query=query,
             recommendations=[],
             sources=[],
             partial=True,
-            notes="No data was available from any agent. " + "; ".join(errors) if errors else "No data was available from any agent.",
+            notes=note,
         )
         if trace:
             trace.set_synthesis(
@@ -741,11 +1087,23 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
 
         # Build recommendations
         recommendations = []
-        for r in data.get("recommendations", []):
+        known_product_names = [product.name for product in product_result.products] if product_result else []
+        for r in data.get("recommendations", [])[:_MAX_FINAL_RECOMMENDATIONS]:
+            resolved_name = r["product_name"]
+            if known_product_names:
+                matched_name = _match_known_product_name(r["product_name"], known_product_names)
+                if matched_name is None:
+                    logger.info(
+                        "Skipping synthesized recommendation '%s' because it did not match a discovered product",
+                        r["product_name"],
+                    )
+                    continue
+                resolved_name = matched_name
+
             recommendations.append(
                 RankedRecommendation(
                     rank=r["rank"],
-                    product_name=r["product_name"],
+                    product_name=resolved_name,
                     price=r.get("price"),
                     rating=r.get("rating"),
                     sentiment=r.get("sentiment"),
@@ -756,6 +1114,9 @@ async def synthesize(state: OrchestratorState) -> dict[str, Any]:
                     confidence=r.get("confidence", 0.0),
                 )
             )
+
+        if not recommendations and has_products:
+            raise ValueError("Synthesis returned no recommendations that matched discovered products")
 
         # Build grounded source links
         sources = _build_source_links(product_result, review_results)
@@ -900,7 +1261,7 @@ def _fallback_synthesis(
     recommendations = []
 
     if product_result:
-        for i, p in enumerate(product_result.products, 1):
+        for i, p in enumerate(product_result.products[:_MAX_FINAL_RECOMMENDATIONS], 1):
             review = review_results.get(p.name)
             recommendations.append(
                 RankedRecommendation(
@@ -917,7 +1278,7 @@ def _fallback_synthesis(
                 )
             )
     elif review_results:
-        for i, (product_name, review) in enumerate(review_results.items(), 1):
+        for i, (product_name, review) in enumerate(list(review_results.items())[:_MAX_FINAL_RECOMMENDATIONS], 1):
             recommendations.append(
                 RankedRecommendation(
                     rank=i,
@@ -951,8 +1312,9 @@ def _fallback_synthesis(
 def _should_fetch_reviews(state: OrchestratorState) -> str:
     """Conditional edge: skip YouTube reviews if no products and no review route."""
     decision = state.get("routing_decision")
+    product_result = state.get("product_result")
 
-    if decision and decision.needs_youtube_reviews:
+    if decision and decision.needs_youtube_reviews and product_result and product_result.products:
         return "execute_youtube_reviews"
 
     return "synthesize"

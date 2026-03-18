@@ -24,6 +24,8 @@ from typing import TextIO
 
 import httpx
 
+from common.config import get_settings
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 SERVICES = [
@@ -72,6 +74,11 @@ class ManagedProcess:
 
 _processes: list[ManagedProcess] = []
 _shutting_down = False
+_PLACEHOLDER_SECRETS = {
+    "",
+    "sk-your-openai-key",
+    "your-youtube-data-api-key",
+}
 
 
 def _merge_pythonpath(project_root: Path) -> str:
@@ -203,6 +210,47 @@ def _wait_for_health(service: dict) -> bool:
     return False
 
 
+def _validate_required_configuration() -> tuple[bool, str | None]:
+    """Validate required credentials before claiming the system is usable."""
+    settings = get_settings()
+    missing: list[str] = []
+
+    openai_key = settings.OPENAI_API_KEY.strip()
+    youtube_key = settings.YOUTUBE_API_KEY.strip()
+
+    if openai_key.lower() in _PLACEHOLDER_SECRETS:
+        missing.append("OPENAI_API_KEY")
+    if youtube_key.lower() in _PLACEHOLDER_SECRETS:
+        missing.append("YOUTUBE_API_KEY")
+
+    if missing:
+        joined = ", ".join(missing)
+        return False, f"Missing or placeholder API keys: {joined}"
+
+    return True, None
+
+
+def _verify_orchestrator_status() -> tuple[bool, str | None]:
+    """Check the orchestrator's aggregated readiness before printing success."""
+    try:
+        resp = httpx.get("http://localhost:8000/status", timeout=5)
+    except httpx.HTTPError as exc:
+        return False, f"Failed to query orchestrator status: {exc}"
+
+    if resp.status_code != 200:
+        return False, f"Orchestrator status endpoint returned HTTP {resp.status_code}"
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        return False, f"Orchestrator status endpoint returned invalid JSON: {exc}"
+
+    if payload.get("status") != "ok":
+        return False, f"Orchestrator reported degraded readiness: {payload.get('status')}"
+
+    return True, None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Launch the Federated Multi-Agent System")
     parser.add_argument(
@@ -229,6 +277,12 @@ def main() -> None:
         print("Copy .env.example to .env and fill in your API keys.")
         sys.exit(1)
 
+    config_ok, config_error = _validate_required_configuration()
+    if not config_ok:
+        print(f"{C.RED}ERROR: {config_error}{C.RESET}")
+        print("Update .env with real API keys before starting the stack.")
+        sys.exit(1)
+
     for service in services:
         print(f"  Starting {C.BOLD}{service['name']}{C.RESET} on port {service['port']}...")
         proc = _start_service(service)
@@ -250,6 +304,13 @@ def main() -> None:
 
     if not all_healthy:
         print(f"\n{C.RED}Some services failed to start. Check logs in .logs/{C.RESET}")
+        _shutdown_all()
+        sys.exit(1)
+
+    status_ok, status_error = _verify_orchestrator_status()
+    if not status_ok:
+        print(f"\n{C.RED}Stack started in a degraded state: {status_error}{C.RESET}")
+        print("Check logs in .logs/ and GET http://localhost:8000/status for details.")
         _shutdown_all()
         sys.exit(1)
 

@@ -92,6 +92,32 @@ def build_app(agent_card, handler, store=None):
 
 
 class ProductDiscoveryServerTests(unittest.TestCase):
+    def test_agent_card_advertises_http_mcp_interface(self):
+        interfaces = product_server.AGENT_CARD.additionalInterfaces or []
+        mcp_interfaces = [iface for iface in interfaces if iface.transport == "MCP"]
+
+        self.assertEqual(len(mcp_interfaces), 1)
+        self.assertEqual(mcp_interfaces[0].url, "http://localhost:5002/mcp")
+
+    def test_debug_progress_endpoint_returns_latest_snapshot(self):
+        client = TestClient(product_server.app)
+        trace_id = "trace-debug-1"
+        payload = {"stage": "search-complete", "query": "best earbuds"}
+
+        product_server.PROGRESS_STORE.publish(trace_id, payload)
+        try:
+            response = client.get(f"/debug/product-discovery/{trace_id}")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["stage"], "search-complete")
+
+            cleared = client.delete(f"/debug/product-discovery/{trace_id}")
+            self.assertEqual(cleared.status_code, 200)
+
+            missing = client.get(f"/debug/product-discovery/{trace_id}")
+            self.assertEqual(missing.status_code, 404)
+        finally:
+            product_server.PROGRESS_STORE.clear(trace_id)
+
     def test_send_message_returns_discovery_artifact(self):
         client = TestClient(build_app(product_server.AGENT_CARD, product_server.handle_send_message))
         fake_result = ProductDiscoveryResult(

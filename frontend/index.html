@@ -723,7 +723,7 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Route Tasks</h4>
-                <p>Deterministic keyword-based routing decides which agents to invoke without spending latency on LLM planning.</p>
+                <p>Structured query understanding and LLM-guided routing decide which agents to invoke while still keeping the execution graph explicit and testable.</p>
               </div>
             </div>
             <div class="pipeline-step step-3">
@@ -731,7 +731,7 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Execute Product Discovery</h4>
-                <p>Send the query via A2A. The product agent searches DuckDuckGo, enriches candidates, grounds product links against evidence, and now emits debug snapshots for live traced runs.</p>
+                <p>Invoke the MCP <code>search_products</code> tool. The product agent searches DuckDuckGo, enriches candidates, grounds product links against evidence, and returns normalized product data to the orchestrator.</p>
               </div>
             </div>
             <div class="pipeline-step step-4">
@@ -756,8 +756,8 @@
           <h2>Design Decisions</h2>
           <div class="feature-grid">
             <div class="feature-card">
-              <h4><span class="feature-icon">R</span> Deterministic Routing</h4>
-              <p>No LLM is used for routing. Keyword-based matching keeps latency low and behavior predictable across runs.</p>
+              <h4><span class="feature-icon">R</span> Structured Routing</h4>
+              <p>GPT-4o-mini reformulates the query and produces a constrained routing decision, while the orchestrator still keeps the execution graph explicit and predictable.</p>
             </div>
             <div class="feature-card">
               <h4><span class="feature-icon">U</span> URL Grounding</h4>
@@ -795,11 +795,11 @@
             </div>
             <div class="protocol-card">
               <h4>MCP</h4>
-              <p>Product Discovery is also exposed as an MCP tool over stdio with initialize handshake support and Content-Length framing.</p>
+              <p>Product Discovery is discovered through A2A and executed through its MCP <code>search_products</code> endpoint on the running service instance, with A2A kept as a resilient fallback path.</p>
             </div>
             <div class="protocol-card">
               <h4>LangGraph</h4>
-              <p>StateGraph orchestration coordinates discovery, routing, product search, review fan-out, and synthesis in a deterministic flow.</p>
+              <p>StateGraph orchestration coordinates discovery, LLM-guided routing, product search, review fan-out, and synthesis in an explicit, typed workflow.</p>
             </div>
             <div class="protocol-card">
               <h4>JSON-RPC 2.0</h4>
@@ -827,10 +827,10 @@
       };
 
       const hints = [
-        "best wireless earbuds under 100",
-        "noise cancelling headphones vs AirPods",
-        "budget mechanical keyboard for gaming",
-        "top rated laptop for students 2025",
+        "RTX 5070",
+        "Ryzen 9 9950",
+        "Razer Cobra Gaming Mouse",
+        "Wacom Cintiq 16",
       ];
 
       const loadingSteps = [

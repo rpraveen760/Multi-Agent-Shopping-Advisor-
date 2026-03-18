@@ -90,6 +90,7 @@ class AgentCardCapabilities(BaseModel):
 class AgentCardInterface(BaseModel):
     url: str
     transport: str = "JSONRPC"
+    metadata: dict[str, Any] | None = None
 
 
 class AgentCard(BaseModel):

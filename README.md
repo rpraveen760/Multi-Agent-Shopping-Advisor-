@@ -9,7 +9,7 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full design walkthrough.
 ```mermaid
 flowchart TD
     U["User Query"] --> O["Central Orchestrator<br/>FastAPI + LangGraph<br/>:8000"]
-    O -->|A2A| P["Product Discovery Agent<br/>FastAPI + MCP tool<br/>:5002"]
+    O -->|MCP tool call| P["Product Discovery Agent<br/>FastAPI + MCP tool<br/>:5002"]
     O -->|A2A| Y["YouTube Review Agent<br/>FastAPI<br/>:5001"]
     P --> W["DuckDuckGo + page enrichment"]
     P --> M["MCP search_products tool"]
@@ -20,8 +20,9 @@ flowchart TD
 ## What It Does
 
 - The orchestrator discovers downstream agents from their A2A Agent Cards.
-- Routing is deterministic and does not use an LLM.
-- The Product Discovery agent finds candidate products, enriches merchant pages, and grounds URLs against retrieved evidence.
+- The orchestrator uses structured LLM-based query understanding and routing before executing downstream calls.
+- The orchestrator invokes Product Discovery through its MCP `search_products` tool, while still discovering that service through its A2A Agent Card.
+- The Product Discovery agent expands the shopper query into a small generic retrieval set, clusters repeated product entities across sources, and returns a grounded 1-3 product shortlist before any review fan-out happens, preferring product-detail links when available and otherwise carrying forward grounded evidence links.
 - The YouTube Review agent summarizes recent review videos with sentiment, pros, cons, confidence, and source links.
 - The orchestrator synthesizes a structured final response and explicitly lists the grounded links returned by the agents.
 
@@ -131,7 +132,7 @@ The important Phase 5/6 contract is that the final response includes an explicit
 
 ## MCP Tool
 
-The Product Discovery agent is also available over MCP stdio as the `search_products` tool.
+The Product Discovery agent exposes `search_products` over MCP at `http://localhost:5002/mcp`, and the orchestrator discovers that MCP interface from the Product Discovery Agent Card before calling the already-running Product Discovery service instance over HTTP. The MCP tool returns at most 3 finalized concrete products so the downstream YouTube fan-out stays focused. For direct local tool testing, the repo also includes a stdio helper path:
 
 List tools:
 
@@ -151,9 +152,10 @@ The helper script performs the required MCP initialize handshake and uses Conten
 
 - Discovery happens through `/.well-known/agent-card.json`.
 - Agent Card `url` values point to the full JSON-RPC endpoint.
-- The shared client sends `SendMessage` and `GetTask` directly to that URL.
+- The shared A2A client sends `SendMessage` and `GetTask` directly to downstream A2A agents such as YouTube Review.
+- Product Discovery is discovered through A2A but executed through its MCP `search_products` tool on the discovered service instance.
 - Non-terminal tasks are polled until they become `completed`, `failed`, `canceled`, or `input-required`.
-- Agent artifacts carry the structured product and review payloads that feed orchestration.
+- Agent artifacts carry the structured review payloads that feed orchestration, while MCP returns structured product payloads for Product Discovery.
 
 ## LangGraph Flow
 
@@ -161,8 +163,8 @@ The orchestrator runs this workflow:
 
 1. `discover_agents`
 2. `route_tasks`
-3. `execute_product_discovery`
-4. `execute_youtube_reviews` when appropriate
+3. `execute_product_discovery` to build a concrete 1-3 product shortlist
+4. `execute_youtube_reviews` only for finalized shortlisted products when appropriate
 5. `synthesize`
 
 If one downstream agent fails, the orchestrator still returns partial results and explains the degradation in `notes`.
@@ -191,7 +193,11 @@ federated-multi-agent-system/
 |   `-- orchestrator/
 |       |-- routing.py
 |       |-- graph.py
+|       |-- trace.py
 |       `-- server.py
+|-- frontend/
+|   |-- index.html
+|   `-- trace.html
 |-- scripts/
 |   `-- test_mcp_stdio.py
 `-- tests/
@@ -204,7 +210,7 @@ federated-multi-agent-system/
 ## Notes
 
 - The detailed design document lives one level up at `../ARCHITECTURE.md`.
-- Routing is deterministic.
+- Routing uses structured query understanding plus an LLM-guided routing decision.
 - Product URLs in the final response are grounded to retrieved candidate evidence.
 - The final `sources` list includes links from both product discovery and YouTube review agents.
 - `run.py` is designed for clean startup and clean shutdown on Windows as well as other platforms.

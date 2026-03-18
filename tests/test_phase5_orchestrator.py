@@ -51,8 +51,9 @@ if "langgraph.graph" not in sys.modules:
     sys.modules["langgraph.graph"] = graph_module
 
 from agents.orchestrator import graph as orchestrator_graph
-from agents.orchestrator.routing import route_query
-from common.a2a_models import AgentCard
+from agents.orchestrator.routing import QueryUnderstanding, route_query
+from agents.orchestrator.trace import TraceRecorder, TraceStore
+from common.a2a_models import AgentCard, AgentCardInterface
 from common.a2a_models import (
     Artifact,
     Product,
@@ -68,8 +69,23 @@ from common.a2a_models import (
 
 
 class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
-    def test_route_query_enables_reviews_for_product_lookups(self):
-        decision = route_query(
+    async def test_route_query_enables_reviews_for_product_lookups(self):
+        llm_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"needs_product_discovery":true,"needs_youtube_reviews":false,"reasoning":"Product data should be enough."}'
+                    )
+                )
+            ]
+        )
+        fake_llm = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=AsyncMock(return_value=llm_response))
+            )
+        )
+
+        decision = await route_query(
             query="LG UltraGear GX9",
             discovered_agents={
                 "product-discovery": AgentCard(
@@ -89,6 +105,17 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
                 "product-discovery": "http://localhost:5002/.well-known/agent-card.json",
                 "youtube-review": "http://localhost:5001/.well-known/agent-card.json",
             },
+            settings=SimpleNamespace(OPENAI_MODEL="gpt-4o-mini"),
+            llm_client=fake_llm,
+            query_understanding=QueryUnderstanding(
+                original_query="LG UltraGear GX9",
+                reformulated_query="LG UltraGear GX9 gaming monitor",
+                product_category="monitor",
+                budget=None,
+                intent="product_search",
+                key_terms=["LG UltraGear GX9"],
+                reasoning="Concrete product lookup.",
+            ),
         )
 
         self.assertTrue(decision.needs_product_discovery)
@@ -122,6 +149,290 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         )
         sleep_mock.assert_awaited()
         self.assertEqual(result.status.state, "completed")
+
+    async def test_execute_product_discovery_prefers_mcp(self):
+        product_result = ProductDiscoveryResult(
+            query="best earbuds",
+            products=[
+                Product(
+                    name="Sony WF-1000XM5",
+                    price="$99.99",
+                    rating="4.5/5",
+                    url="https://merchant.example/sony",
+                    key_features=["ANC"],
+                    source="Example Merchant",
+                    evidence_urls=["https://merchant.example/sony"],
+                    confidence=0.91,
+                )
+            ],
+            summary="One result",
+        )
+        fake_client = SimpleNamespace(send_message=AsyncMock(), get_task=AsyncMock())
+        state = {
+            "settings": SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
+            "routing_decision": SimpleNamespace(
+                needs_product_discovery=True,
+                routes=[
+                    SimpleNamespace(
+                        agent_name="product-discovery",
+                        agent_url="http://localhost:5002/a2a/v1",
+                        query_text="best earbuds",
+                    )
+                ],
+            ),
+            "discovered_agents": {
+                "product-discovery": AgentCard(
+                    name="Product Discovery Agent",
+                    description="Product agent",
+                    url="http://localhost:5002/a2a/v1",
+                    additionalInterfaces=[
+                        AgentCardInterface(
+                            url="http://localhost:5002/mcp",
+                            transport="MCP",
+                        )
+                    ],
+                    skills=[],
+                )
+            },
+            "a2a_client": fake_client,
+            "errors": [],
+        }
+
+        with patch(
+            "agents.orchestrator.graph._call_product_discovery_via_mcp",
+            new=AsyncMock(return_value=product_result),
+        ) as mcp_mock:
+            result = await orchestrator_graph.execute_product_discovery(state)
+
+        mcp_mock.assert_awaited_once()
+        fake_client.send_message.assert_not_called()
+        self.assertIs(result["product_result"], product_result)
+
+    async def test_call_product_discovery_via_mcp_requests_three_results(self):
+        call_arguments = {}
+
+        class FakeToolResult:
+            isError = False
+            structuredContent = {
+                "query": "best earbuds",
+                "products": [],
+                "summary": "No products",
+            }
+            content = []
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                return SimpleNamespace(tools=[SimpleNamespace(name="search_products")])
+
+            async def call_tool(self, name, arguments):
+                call_arguments["name"] = name
+                call_arguments["arguments"] = arguments
+                return FakeToolResult()
+
+        class FakeHTTPClient:
+            async def __aenter__(self):
+                return (object(), object(), lambda: "session-id")
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        fake_mcp_module = types.ModuleType("mcp")
+        fake_mcp_module.ClientSession = FakeSession
+        fake_mcp_client_module = types.ModuleType("mcp.client")
+        fake_mcp_streamable_module = types.ModuleType("mcp.client.streamable_http")
+        fake_mcp_streamable_module.streamable_http_client = lambda url: FakeHTTPClient()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "mcp": fake_mcp_module,
+                "mcp.client": fake_mcp_client_module,
+                "mcp.client.streamable_http": fake_mcp_streamable_module,
+            },
+        ):
+            result = await orchestrator_graph._call_product_discovery_via_mcp(
+                query="best earbuds",
+                settings=SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
+                mcp_url="http://localhost:5002/mcp",
+            )
+
+        self.assertEqual(call_arguments["name"], "search_products")
+        self.assertEqual(call_arguments["arguments"]["max_results"], 3)
+        self.assertEqual(result.query, "best earbuds")
+
+    async def test_execute_product_discovery_uses_live_polled_trace_when_available(self):
+        product_result = ProductDiscoveryResult(
+            query="best earbuds",
+            products=[
+                Product(
+                    name="Sony WF-1000XM5",
+                    price="$99.99",
+                    rating="4.5/5",
+                    url="https://merchant.example/sony",
+                    key_features=["ANC"],
+                    source="Example Merchant",
+                    evidence_urls=["https://merchant.example/sony"],
+                    confidence=0.91,
+                )
+            ],
+            summary="One result",
+        )
+        trace_store = TraceStore()
+        run_snapshot = trace_store.create_run("best earbuds")
+        recorder = TraceRecorder(trace_store, run_snapshot.run_id)
+        live_trace = {
+            "query": "best earbuds",
+            "stage": "normalization-complete",
+            "normalized_products": [{"name": "Sony WF-1000XM5"}],
+        }
+        state = {
+            "settings": SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
+            "routing_decision": SimpleNamespace(
+                needs_product_discovery=True,
+                routes=[
+                    SimpleNamespace(
+                        agent_name="product-discovery",
+                        agent_url="http://localhost:5002/a2a/v1",
+                        query_text="best earbuds",
+                    )
+                ],
+            ),
+            "discovered_agents": {
+                "product-discovery": AgentCard(
+                    name="Product Discovery Agent",
+                    description="Product agent",
+                    url="http://localhost:5002/a2a/v1",
+                    additionalInterfaces=[
+                        AgentCardInterface(
+                            url="http://localhost:5002/mcp",
+                            transport="MCP",
+                        )
+                    ],
+                    skills=[],
+                )
+            },
+            "errors": [],
+            "trace_recorder": recorder,
+        }
+
+        with patch(
+            "agents.orchestrator.graph._call_product_discovery_via_mcp",
+            new=AsyncMock(return_value=product_result),
+        ), patch(
+            "agents.orchestrator.graph._poll_product_discovery_debug",
+            new=AsyncMock(return_value=live_trace),
+        ) as poll_mock, patch(
+            "agents.orchestrator.graph._clear_product_discovery_debug",
+            new=AsyncMock(),
+        ) as clear_mock:
+            result = await orchestrator_graph.execute_product_discovery(state)
+
+        snapshot = trace_store.get_run(run_snapshot.run_id)
+        self.assertIs(result["product_result"], product_result)
+        self.assertEqual(snapshot.product_trace, live_trace)
+        poll_mock.assert_awaited_once()
+        clear_mock.assert_awaited_once()
+
+    async def test_execute_product_discovery_falls_back_to_a2a(self):
+        product_result = ProductDiscoveryResult(
+            query="best earbuds",
+            products=[
+                Product(
+                    name="Sony WF-1000XM5",
+                    price="$99.99",
+                    rating="4.5/5",
+                    url="https://merchant.example/sony",
+                    key_features=["ANC"],
+                    source="Example Merchant",
+                    evidence_urls=["https://merchant.example/sony"],
+                    confidence=0.91,
+                )
+            ],
+            summary="One result",
+        )
+        task = Task(
+            status=TaskStatus(state="completed", message=make_agent_message("done")),
+            artifacts=[
+                Artifact(
+                    name="product-discovery-result",
+                    parts=[TextPart(text=product_result.model_dump_json())],
+                )
+            ],
+        )
+        fake_client = SimpleNamespace(
+            send_message=AsyncMock(return_value=task),
+            get_task=AsyncMock(),
+        )
+        state = {
+            "settings": SimpleNamespace(A2A_CLIENT_TIMEOUT_SECONDS=1),
+            "routing_decision": SimpleNamespace(
+                needs_product_discovery=True,
+                routes=[
+                    SimpleNamespace(
+                        agent_name="product-discovery",
+                        agent_url="http://localhost:5002/a2a/v1",
+                        query_text="best earbuds",
+                    )
+                ],
+            ),
+            "discovered_agents": {
+                "product-discovery": AgentCard(
+                    name="Product Discovery Agent",
+                    description="Product agent",
+                    url="http://localhost:5002/a2a/v1",
+                    additionalInterfaces=[
+                        AgentCardInterface(
+                            url="http://localhost:5002/mcp",
+                            transport="MCP",
+                        )
+                    ],
+                    skills=[],
+                )
+            },
+            "a2a_client": fake_client,
+            "errors": [],
+        }
+
+        with patch(
+            "agents.orchestrator.graph._call_product_discovery_via_mcp",
+            new=AsyncMock(side_effect=RuntimeError("mcp boom")),
+        ):
+            result = await orchestrator_graph.execute_product_discovery(state)
+
+        fake_client.send_message.assert_awaited_once_with(
+            "http://localhost:5002/a2a/v1",
+            "best earbuds",
+        )
+        self.assertEqual(result["product_result"].products[0].name, "Sony WF-1000XM5")
+        self.assertIn("falling back to A2A", result["errors"][0])
+
+    def test_resolve_product_mcp_url_uses_http_interface_from_agent_card(self):
+        agent_card = AgentCard(
+            name="Product Discovery Agent",
+            description="Product agent",
+            url="http://localhost:5002/a2a/v1",
+            additionalInterfaces=[
+                AgentCardInterface(url="http://localhost:5002/a2a/v1", transport="JSONRPC"),
+                AgentCardInterface(url="http://localhost:5002/mcp", transport="MCP"),
+            ],
+            skills=[],
+        )
+
+        url = orchestrator_graph._resolve_product_mcp_url(agent_card)
+
+        self.assertEqual(url, "http://localhost:5002/mcp")
 
     def test_build_source_links_includes_evidence_urls_and_dedupes(self):
         product_result = ProductDiscoveryResult(
@@ -175,6 +486,189 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
                 "https://youtube.com/watch?v=abc123",
             ],
         )
+
+    def test_select_review_targets_limits_to_top_three_products(self):
+        product_result = ProductDiscoveryResult(
+            query="best drawing tablet with screen",
+            products=[
+                Product(
+                    name="XP-Pen Artist 13.3 Pro",
+                    url="https://merchant.example/xppen",
+                    source="Example Merchant",
+                    confidence=0.85,
+                    evidence_urls=["https://merchant.example/xppen"],
+                ),
+                Product(
+                    name="Wacom Cintiq 16",
+                    url="https://merchant.example/wacom",
+                    source="Example Merchant",
+                    confidence=0.95,
+                    evidence_urls=["https://merchant.example/wacom", "https://reviews.example/wacom"],
+                ),
+                Product(
+                    name="Huion Kamvas 13",
+                    url="https://merchant.example/huion",
+                    source="Example Merchant",
+                    confidence=0.9,
+                    evidence_urls=["https://merchant.example/huion"],
+                ),
+                Product(
+                    name="Gaomon PD1161",
+                    url="https://merchant.example/gaomon",
+                    source="Example Merchant",
+                    confidence=0.8,
+                    evidence_urls=["https://merchant.example/gaomon"],
+                ),
+            ],
+            summary="Three good candidates and one weaker fallback.",
+        )
+
+        targets = orchestrator_graph._select_review_targets(product_result)
+
+        self.assertEqual(
+            targets,
+            ["Wacom Cintiq 16", "Huion Kamvas 13", "XP-Pen Artist 13.3 Pro"],
+        )
+
+    async def test_execute_youtube_reviews_records_shortlisted_targets_in_trace(self):
+        review_summary = ReviewSummary(
+            product_name="Wacom Cintiq 16",
+            overall_sentiment="positive",
+            score=8.9,
+            pros=["Great pen feel"],
+            cons=["Expensive"],
+            key_quotes=[],
+            recommendation="Strong drawing tablet.",
+            confidence=0.9,
+            sources=[],
+        )
+        review_task = Task(
+            status=TaskStatus(state="completed", message=make_agent_message("done")),
+            artifacts=[
+                Artifact(
+                    name="review-summary",
+                    parts=[TextPart(text=review_summary.model_dump_json())],
+                )
+            ],
+        )
+        fake_client = SimpleNamespace(
+            send_message=AsyncMock(return_value=review_task),
+            get_task=AsyncMock(),
+        )
+        trace_store = TraceStore()
+        run_snapshot = trace_store.create_run("best drawing tablet with screen")
+        recorder = TraceRecorder(trace_store, run_snapshot.run_id)
+        state = {
+            "query": "best drawing tablet with screen",
+            "settings": SimpleNamespace(
+                YOUTUBE_REVIEW_CONCURRENCY=2,
+                A2A_CLIENT_TIMEOUT_SECONDS=1,
+            ),
+            "routing_decision": SimpleNamespace(
+                needs_youtube_reviews=True,
+                routes=[
+                    SimpleNamespace(
+                        agent_name="youtube-review",
+                        agent_url="http://localhost:5001/a2a/v1",
+                    )
+                ],
+            ),
+            "product_result": ProductDiscoveryResult(
+                query="best drawing tablet with screen",
+                products=[
+                    Product(
+                        name="XP-Pen Artist 13.3 Pro",
+                        url="https://merchant.example/xppen",
+                        source="Example Merchant",
+                        confidence=0.85,
+                        evidence_urls=["https://merchant.example/xppen"],
+                    ),
+                    Product(
+                        name="Wacom Cintiq 16",
+                        url="https://merchant.example/wacom",
+                        source="Example Merchant",
+                        confidence=0.95,
+                        evidence_urls=["https://merchant.example/wacom", "https://reviews.example/wacom"],
+                    ),
+                    Product(
+                        name="Huion Kamvas 13",
+                        url="https://merchant.example/huion",
+                        source="Example Merchant",
+                        confidence=0.9,
+                        evidence_urls=["https://merchant.example/huion"],
+                    ),
+                    Product(
+                        name="Gaomon PD1161",
+                        url="https://merchant.example/gaomon",
+                        source="Example Merchant",
+                        confidence=0.8,
+                        evidence_urls=["https://merchant.example/gaomon"],
+                    ),
+                ],
+                summary="Concrete shortlist available.",
+            ),
+            "a2a_client": fake_client,
+            "trace_recorder": recorder,
+            "errors": [],
+        }
+
+        with patch(
+            "agents.orchestrator.graph._resolve_send_message_result",
+            new=AsyncMock(return_value=review_task),
+        ):
+            await orchestrator_graph.execute_youtube_reviews(state)
+
+        snapshot = trace_store.get_run(run_snapshot.run_id)
+        self.assertEqual(
+            snapshot.product_trace["review_targets"],
+            ["Wacom Cintiq 16", "Huion Kamvas 13", "XP-Pen Artist 13.3 Pro"],
+        )
+
+    async def test_execute_youtube_reviews_skips_when_no_finalized_products(self):
+        fake_client = SimpleNamespace(
+            send_message=AsyncMock(),
+            get_task=AsyncMock(),
+        )
+        state = {
+            "query": "best gaming chair under 150",
+            "settings": SimpleNamespace(
+                YOUTUBE_REVIEW_CONCURRENCY=2,
+                A2A_CLIENT_TIMEOUT_SECONDS=1,
+            ),
+            "routing_decision": SimpleNamespace(
+                needs_youtube_reviews=True,
+                routes=[
+                    SimpleNamespace(
+                        agent_name="youtube-review",
+                        agent_url="http://localhost:5001/a2a/v1",
+                    )
+                ],
+            ),
+            "product_result": ProductDiscoveryResult(
+                query="best gaming chair under 150",
+                products=[],
+                summary="No concrete shortlist could be finalized.",
+            ),
+            "a2a_client": fake_client,
+            "errors": [],
+        }
+
+        result = await orchestrator_graph.execute_youtube_reviews(state)
+
+        self.assertEqual(result["review_results"], {})
+        fake_client.send_message.assert_not_called()
+
+    def test_should_fetch_reviews_skips_when_no_finalized_products(self):
+        state = {
+            "routing_decision": SimpleNamespace(needs_youtube_reviews=True),
+            "product_result": ProductDiscoveryResult(
+                query="best gaming chair under 150",
+                products=[],
+                summary="No shortlist",
+            ),
+        }
+
+        self.assertEqual(orchestrator_graph._should_fetch_reviews(state), "synthesize")
 
     def test_extract_named_debug_artifacts(self):
         task = Task(
@@ -286,6 +780,86 @@ class OrchestratorHelperTests(unittest.IsolatedAsyncioTestCase):
         unified = result["unified_response"]
         self.assertFalse(unified.partial)
         self.assertIsNone(unified.notes)
+
+    async def test_synthesize_matches_recommendations_back_to_discovered_products(self):
+        product_result = ProductDiscoveryResult(
+            query="best drawing tablet with screen",
+            products=[
+                Product(
+                    name="Wacom Cintiq 16",
+                    price="₹49,999",
+                    rating=None,
+                    url="https://merchant.example/wacom",
+                    key_features=["15.6-inch pen display"],
+                    source="Example Merchant",
+                    evidence_urls=["https://merchant.example/wacom"],
+                    confidence=0.93,
+                )
+            ],
+            summary="One strong candidate",
+        )
+        llm_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"recommendations":[{"rank":1,"product_name":"Cintiq 16",'
+                            '"price":"₹49,999","rating":null,"sentiment":"positive","score":0.91,'
+                            '"rationale":"Strong beginner pen display.","pros":["Great drawing feel"],'
+                            '"cons":["Expensive"],"confidence":0.9}],"notes":null}'
+                        )
+                    )
+                )
+            ]
+        )
+        fake_llm = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=AsyncMock(return_value=llm_response))
+            )
+        )
+
+        result = await orchestrator_graph.synthesize(
+            {
+                "query": "best drawing tablet with screen",
+                "settings": SimpleNamespace(OPENAI_MODEL="gpt-4o-mini", OPENAI_API_KEY="oa-key"),
+                "product_result": product_result,
+                "review_results": {},
+                "routing_decision": SimpleNamespace(
+                    needs_product_discovery=True,
+                    needs_youtube_reviews=False,
+                ),
+                "errors": [],
+                "llm_client": fake_llm,
+            }
+        )
+
+        unified = result["unified_response"]
+        self.assertEqual(len(unified.recommendations), 1)
+        self.assertEqual(unified.recommendations[0].product_name, "Wacom Cintiq 16")
+
+    async def test_synthesize_returns_partial_when_no_concrete_shortlist_is_finalized(self):
+        result = await orchestrator_graph.synthesize(
+            {
+                "query": "best gaming chair under 150",
+                "settings": SimpleNamespace(OPENAI_MODEL="gpt-4o-mini", OPENAI_API_KEY="oa-key"),
+                "product_result": ProductDiscoveryResult(
+                    query="best gaming chair under 150",
+                    products=[],
+                    summary="No concrete shortlist could be finalized.",
+                ),
+                "review_results": {},
+                "routing_decision": SimpleNamespace(
+                    needs_product_discovery=True,
+                    needs_youtube_reviews=True,
+                ),
+                "errors": [],
+            }
+        )
+
+        unified = result["unified_response"]
+        self.assertTrue(unified.partial)
+        self.assertEqual(unified.recommendations, [])
+        self.assertIn("No concrete products could be finalized", unified.notes)
 
 
 class RunQueryTests(unittest.IsolatedAsyncioTestCase):
