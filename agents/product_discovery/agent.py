@@ -22,8 +22,20 @@ from bs4 import BeautifulSoup
 from ddgs import DDGS
 from openai import AsyncOpenAI
 
+from agents.product_discovery.pipeline import (
+    run_enrichment_stage,
+    run_search_stage,
+    run_shortlist_stage,
+)
+from agents.product_discovery.traces import (
+    build_debug_snapshot,
+    candidate_snapshot as build_candidate_trace_snapshot,
+    entity_snapshot as build_entity_trace_snapshot,
+    product_snapshot as build_product_trace_snapshot,
+)
 from common.a2a_models import Product, ProductDiscoveryResult
 from common.config import Settings
+from common.runtime_helpers import close_async_resource
 
 logger = logging.getLogger(__name__)
 
@@ -229,13 +241,7 @@ async def _emit_progress(
 
 async def _close_async_client(client: Any) -> None:
     """Best-effort close for SDK clients used in async helpers."""
-    close_method = getattr(client, "close", None) or getattr(client, "aclose", None)
-    if close_method is None:
-        return
-
-    result = close_method()
-    if asyncio.iscoroutine(result):
-        await result
+    await close_async_resource(client)
 
 
 def _build_search_query(query: str) -> str:
@@ -287,34 +293,11 @@ def _build_detail_search_queries(product_name: str) -> list[str]:
 
 def _candidate_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
     """Trim raw candidate data for trace/debug views."""
-    matched_queries = candidate.get("matched_queries") or []
-    return {
-        "title": candidate.get("title", ""),
-        "candidate_entity": candidate.get("candidate_entity", ""),
-        "snippet": candidate.get("snippet", "")[:240],
-        "url": candidate.get("url", ""),
-        "merchant": candidate.get("merchant") or _extract_domain(candidate.get("url", "")),
-        "matched_query": ", ".join(matched_queries[:2]) or candidate.get("matched_query", ""),
-        "enriched_title": candidate.get("enriched_title", ""),
-        "price": candidate.get("extracted_price"),
-        "rating": candidate.get("extracted_rating"),
-        "shortlist_score": candidate.get("shortlist_score"),
-        "shortlist_reasons": candidate.get("shortlist_reasons", [])[:3],
-        "page_excerpt": candidate.get("page_text_excerpt", "")[:240],
-    }
+    return build_candidate_trace_snapshot(candidate, merchant_resolver=_extract_domain)
 
 
 def _product_snapshot(product: Product) -> dict[str, Any]:
-    return {
-        "name": product.name,
-        "price": product.price,
-        "rating": product.rating,
-        "source": product.source,
-        "url": product.url,
-        "confidence": product.confidence,
-        "key_features": product.key_features[:3],
-        "evidence_urls": product.evidence_urls[:3],
-    }
+    return build_product_trace_snapshot(product)
 
 
 # ── Main entry point ──────────────────────────────────────────────
@@ -355,23 +338,12 @@ async def search_products_with_debug(
 ) -> tuple[ProductDiscoveryResult, dict[str, Any]]:
     """Run product discovery and return both the final result and debug snapshots."""
     logger.info("Starting product discovery for: %s", query)
-    debug_snapshot: dict[str, Any] = {
-        "query": query,
-        "search_query": _build_search_query(query),
-        "search_queries": _build_search_queries(query),
-        "candidate_count": 0,
-        "stage": "search-started",
-        "candidates": [],
-        "enriched_candidates": [],
-        "candidate_entities": [],
-        "filtered_candidates": [],
-        "normalized_products": [],
-        "finalized_products": [],
-        "shortlist_reasons": [],
-        "rejected_generic_products": [],
-        "rejected_entities": [],
-        "summary": "",
-    }
+    search_queries = _build_search_queries(query)
+    debug_snapshot: dict[str, Any] = build_debug_snapshot(
+        query=query,
+        search_query=_build_search_query(query),
+        search_queries=search_queries,
+    )
 
     await _emit_progress(
         on_step,
@@ -380,17 +352,15 @@ async def search_products_with_debug(
         debug_snapshot,
     )
 
-    # Step 1: Candidate retrieval
-    candidates = await asyncio.to_thread(_search_duckduckgo, query)
-    debug_snapshot["stage"] = "search-complete"
-    debug_snapshot["candidate_count"] = len(candidates)
-    debug_snapshot["candidates"] = [_candidate_snapshot(item) for item in candidates[:SEARCH_MAX_RESULTS]]
-    await _emit_progress(
-        on_step,
-        "search-complete",
-        f"Collected {len(candidates)} web search candidates",
-        debug_snapshot,
+    search_stage = await run_search_stage(
+        query=query,
+        debug_snapshot=debug_snapshot,
+        emit_progress=lambda stage, message, snapshot: _emit_progress(on_step, stage, message, snapshot),
+        search_fn=lambda q: _search_duckduckgo(q),
+        snapshot_fn=_candidate_snapshot,
+        search_max_results=SEARCH_MAX_RESULTS,
     )
+    candidates = search_stage.candidates
     if not candidates:
         logger.warning("No search results for: %s", query)
         result = ProductDiscoveryResult(
@@ -401,23 +371,15 @@ async def search_products_with_debug(
         debug_snapshot["summary"] = result.summary
         return result, debug_snapshot
 
-    # Step 2: Deterministic enrichment
-    await _emit_progress(
-        on_step,
-        "enrichment-started",
-        f"Enriching the top {min(len(candidates), ENRICH_TOP_N)} candidate pages",
-        debug_snapshot,
+    enrichment_stage = await run_enrichment_stage(
+        candidates=candidates,
+        debug_snapshot=debug_snapshot,
+        emit_progress=lambda stage, message, snapshot: _emit_progress(on_step, stage, message, snapshot),
+        enrich_fn=_enrich_candidates,
+        snapshot_fn=_candidate_snapshot,
+        enrich_top_n=ENRICH_TOP_N,
     )
-    enriched = await _enrich_candidates(candidates[:ENRICH_TOP_N])
-    usable = [c for c in enriched if c.get("enriched_title") or c.get("snippet")]
-    debug_snapshot["stage"] = "enrichment-complete"
-    debug_snapshot["enriched_candidates"] = [_candidate_snapshot(item) for item in usable[:ENRICH_TOP_N]]
-    await _emit_progress(
-        on_step,
-        "enrichment-complete",
-        f"Prepared {len(usable)} enriched candidates for normalization",
-        debug_snapshot,
-    )
+    usable = enrichment_stage.enriched_candidates
 
     if not usable:
         logger.warning("No usable enrichment data for: %s", query)
@@ -429,23 +391,17 @@ async def search_products_with_debug(
         debug_snapshot["summary"] = result.summary
         return result, debug_snapshot
 
-    # Step 3: Deterministic shortlist filtering
-    await _emit_progress(
-        on_step,
-        "filtering-started",
-        "Scoring enriched candidates and building a concrete shortlist",
-        debug_snapshot,
+    shortlist_stage = await run_shortlist_stage(
+        query=query,
+        candidates=usable,
+        max_results=max_results,
+        debug_snapshot=debug_snapshot,
+        emit_progress=lambda stage, message, snapshot: _emit_progress(on_step, stage, message, snapshot),
+        shortlist_fn=_filter_candidates_for_shortlist,
+        snapshot_fn=_candidate_snapshot,
+        entity_snapshot_fn=build_entity_trace_snapshot,
     )
-    filtered, candidate_entities = _filter_candidates_for_shortlist(query, usable, max_results)
-    debug_snapshot["stage"] = "filtering-complete"
-    debug_snapshot["candidate_entities"] = candidate_entities[:FILTERED_CANDIDATE_LIMIT]
-    debug_snapshot["filtered_candidates"] = [_candidate_snapshot(item) for item in filtered]
-    await _emit_progress(
-        on_step,
-        "filtering-complete",
-        f"Retained {len(filtered)} shortlist candidates for normalization",
-        debug_snapshot,
-    )
+    filtered = shortlist_stage.filtered_candidates
 
     if not filtered:
         logger.warning("No shortlist-quality candidates for: %s", query)

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -21,6 +20,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from agents.orchestrator.discovery import (
+    agent_endpoints,
+    resolve_mcp_interface_url,
+    verify_product_discovery_mcp,
+)
 from agents.orchestrator.graph import run_query
 from agents.orchestrator.trace import QueryTraceSnapshot, TraceRecorder, TraceStore
 from common.a2a_client import A2AClient
@@ -100,72 +104,6 @@ class TraceStartResponse(BaseModel):
     status: str
     status_url: str
 
-
-def _agent_endpoints(settings) -> dict[str, str]:
-    return {
-        "product-discovery": settings.PRODUCT_AGENT_CARD_URL,
-        "youtube-review": settings.YOUTUBE_AGENT_CARD_URL,
-    }
-
-
-def _resolve_mcp_interface_url(card) -> str | None:
-    interfaces = getattr(card, "additionalInterfaces", None) or []
-    for interface in interfaces:
-        if getattr(interface, "transport", "").upper() != "MCP":
-            continue
-        url = getattr(interface, "url", "")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
-            return url
-    return None
-
-
-async def _verify_product_discovery_mcp(card) -> tuple[bool, str | None]:
-    """Verify that the discovered Product Discovery MCP endpoint is usable."""
-    mcp_url = _resolve_mcp_interface_url(card)
-    if not mcp_url:
-        return False, "Agent Card did not advertise an HTTP MCP interface"
-
-    try:
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
-    except ImportError:
-        return False, "MCP client dependencies are unavailable in the orchestrator"
-
-    try:
-        async with streamable_http_client(mcp_url) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(
-                read_stream,
-                write_stream,
-                read_timeout_seconds=timedelta(seconds=5),
-            ) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-    except Exception as exc:
-        return False, f"MCP interface check failed: {exc}"
-
-    if not any(tool.name == "search_products" for tool in tools.tools):
-        return False, "MCP interface did not advertise search_products"
-
-    return True, None
-
-
-async def _assess_agent_readiness(name: str, card) -> tuple[str, str]:
-    """Return the runtime readiness status and description for a discovered agent."""
-    description = getattr(card, "description", "") or ""
-
-    if name != "product-discovery":
-        return "available", description
-
-    ok, detail = await _verify_product_discovery_mcp(card)
-    if ok:
-        return "available", description
-
-    degraded_description = description
-    if detail:
-        degraded_description = f"{description} (MCP unavailable: {detail})".strip()
-    return "degraded", degraded_description
-
-
 async def _discover_agents() -> list[dict]:
     settings = get_settings()
     client = A2AClient()
@@ -182,7 +120,7 @@ async def _discover_agents() -> list[dict]:
                         "url": card.url,
                         "description": description,
                         "status": readiness,
-                        "skills": [s.model_dump() for s in card.skills],
+                        "skills": [skill.model_dump() for skill in card.skills],
                     }
                 )
             except Exception as exc:
@@ -199,6 +137,34 @@ async def _discover_agents() -> list[dict]:
         await client.close()
 
     return agents
+
+
+def _agent_endpoints(settings) -> dict[str, str]:
+    return agent_endpoints(settings)
+
+
+def _resolve_mcp_interface_url(card) -> str | None:
+    return resolve_mcp_interface_url(card)
+
+
+async def _verify_product_discovery_mcp(card) -> tuple[bool, str | None]:
+    return await verify_product_discovery_mcp(card)
+
+
+async def _assess_agent_readiness(name: str, card) -> tuple[str, str]:
+    description = getattr(card, "description", "") or ""
+
+    if name != "product-discovery":
+        return "available", description
+
+    ok, detail = await _verify_product_discovery_mcp(card)
+    if ok:
+        return "available", description
+
+    degraded_description = description
+    if detail:
+        degraded_description = f"{description} (MCP unavailable: {detail})".strip()
+    return "degraded", degraded_description
 
 
 # ── Endpoints ────────────────────────────────────────────────────

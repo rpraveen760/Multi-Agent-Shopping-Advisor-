@@ -47,15 +47,13 @@
     .hero p,.sub,.mini p,.mini li,.mini a,.body,.note{color:var(--muted)}
     .hero-badges,.quick,.pills,.metrics,.stages{display:flex;gap:.55rem;flex-wrap:wrap}
     .hero-badges{margin-top:1rem}
-    .hero-badges span,.hint,.pill{padding:.35rem .72rem;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(155,176,203,.16);font-size:.78rem;color:var(--muted)}
+    .hero-badges span,.pill{padding:.35rem .72rem;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(155,176,203,.16);font-size:.78rem;color:var(--muted)}
     .form{display:flex;gap:.7rem;padding:.7rem;border-radius:14px;border:1px solid var(--line);background:var(--soft)}
     .form input{flex:1;border:none;outline:none;background:transparent;color:var(--text);font-size:1rem}
     .form input::placeholder{color:var(--dim)}
     .btn{border:none;border-radius:12px;padding:.82rem 1.15rem;font-weight:800;color:white;background:linear-gradient(135deg,var(--accent),var(--blue));cursor:pointer}
     .btn:disabled{opacity:.55;cursor:not-allowed}
     .quick{margin-top:.85rem}
-    .hint{cursor:pointer}
-    .hint:hover{color:var(--accent);border-color:rgba(46,197,255,.35)}
     .status-row{display:flex;gap:.7rem;flex-wrap:wrap;align-items:center;margin-top:.9rem;font-size:.84rem;color:var(--muted)}
     .status{padding:.35rem .72rem}
     .status.queued{background:rgba(79,70,229,.16);color:#c7c3ff}
@@ -117,9 +115,9 @@
       <div class="card">
         <div class="eyebrow">Live Execution Trace</div>
         <h1>Watch the agents work in real time.</h1>
-        <p>This page follows the orchestrator as it discovers agents, routes calls, polls A2A tasks, picks YouTube videos, extracts transcript evidence, and builds the final response.</p>
+        <p>This page follows the orchestrator as it discovers agents, resolves the MCP product search, finalizes a shortlist, sends those products to YouTube review, extracts transcript evidence, and builds the final response.</p>
         <div class="hero-badges">
-          <span>A2A discovery</span><span>Routing decisions</span><span>YouTube selection</span><span>Transcript evidence</span><span>Final sources</span>
+          <span>A2A discovery</span><span>MCP shortlist</span><span>YouTube selection</span><span>Transcript evidence</span><span>Final sources</span>
         </div>
       </div>
       <div class="card">
@@ -129,7 +127,6 @@
           <input id="query-input" placeholder="Try: best gaming monitor under 1500" autocomplete="off" />
           <button id="run-button" class="btn" type="button">Run Live Trace</button>
         </div>
-        <div id="quick-hints" class="quick"></div>
         <div class="status-row">
           <span id="status-pill" class="status queued"><span class="dot"></span><span id="status-text">Idle</span></span>
           <span id="run-meta">No trace run started yet.</span>
@@ -140,8 +137,8 @@
 
     <section id="empty-state" class="card">
       <h2>Nothing running yet</h2>
-      <p class="sub">Start a trace to see the background execution flow, intermediate evidence, and the final response contract.</p>
-      <div class="pills"><span class="pill">Real task polling</span><span class="pill">Agent debug snapshots</span><span class="pill">Unified response payload</span></div>
+      <p class="sub">Start a trace to see discovery, shortlist formation, review execution, and the final response contract.</p>
+      <div class="pills"><span class="pill">Product shortlist</span><span class="pill">Review fan-out</span><span class="pill">Unified response payload</span></div>
     </section>
 
     <section id="trace-view" class="layout hidden">
@@ -170,13 +167,11 @@
 
   <script>
     (() => {
-      const hints = ["RTX 5070", "Ryzen 9 9950", "Razer Cobra Gaming Mouse", "Wacom Cintiq 16"];
       const state = { runId: "", snapshot: null, starting: false, error: "" };
       let timer = null;
       const el = {
         input: document.getElementById("query-input"),
         button: document.getElementById("run-button"),
-        hints: document.getElementById("quick-hints"),
         pill: document.getElementById("status-pill"),
         statusText: document.getElementById("status-text"),
         runMeta: document.getElementById("run-meta"),
@@ -196,14 +191,17 @@
       const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
       const toUrl = (v) => { try { const u = new URL(v, window.location.origin); return /https?:/.test(u.protocol) ? u.href : "#"; } catch { return "#"; } };
       const arr = (v) => Array.isArray(v) ? v : [];
-      const fmtTime = (v) => { const d = new Date(v); return Number.isNaN(d.getTime()) ? String(v ?? "N/A") : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); };
+      const fmtTime = (v) => { const d = new Date(v); return Number.isNaN(d.getTime()) ? String(v ?? "") : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); };
       const statusClass = (v) => ["queued", "running", "completed", "failed"].includes(v) ? v : "running";
+      const hasDisplayValue = (v) => {
+        if (v === null || v === undefined) return false;
+        if (typeof v === "string") {
+          const normalized = v.trim().toLowerCase();
+          return normalized !== "" && normalized !== "n/a" && normalized !== "na" && normalized !== "null" && normalized !== "none";
+        }
+        return true;
+      };
       const stop = () => { if (timer !== null) { window.clearInterval(timer); timer = null; } };
-
-      function renderHints() {
-        el.hints.innerHTML = hints.map((h) => `<button class="hint" type="button" data-q="${esc(h)}">${esc(h)}</button>`).join("");
-        el.hints.querySelectorAll(".hint").forEach((button) => button.addEventListener("click", () => { const q = button.getAttribute("data-q") || ""; el.input.value = q; void start(q); }));
-      }
 
       function buildStages(snapshot) {
         const routing = snapshot.routing || {};
@@ -245,8 +243,8 @@
       function renderDiscovery(snapshot) {
         const agents = arr(snapshot.discovered_agents);
         const routing = snapshot.routing || null;
-        const agentsHtml = agents.length ? `<div><div class="section">Discovered Agents</div><div class="items">${agents.map((agent) => `<div class="mini"><h3>${esc(agent.name || agent.agent_name || "Unnamed agent")}</h3><p>${esc(agent.description || "No description")}</p><ul><li><strong>Card:</strong> <a href="${esc(toUrl(agent.card_url))}" target="_blank" rel="noopener noreferrer">${esc(agent.card_url || "n/a")}</a></li><li><strong>Endpoint:</strong> <a href="${esc(toUrl(agent.url))}" target="_blank" rel="noopener noreferrer">${esc(agent.url || "n/a")}</a></li><li><strong>Skills:</strong> ${esc(arr(agent.skills).map((skill) => skill.name).join(", ") || "None")}</li></ul></div>`).join("")}</div></div>` : '<div class="empty">No discovered agent cards yet.</div>';
-        const routesHtml = routing && arr(routing.routes).length ? `<div><div class="section">Resolved Routes</div><div class="pills"><span class="pill">Products: ${routing.needs_product_discovery ? "yes" : "no"}</span><span class="pill">Reviews: ${routing.needs_youtube_reviews ? "yes" : "no"}</span></div><div class="items">${routing.routes.map((route) => `<div class="mini"><h3>${esc(route.agent_name)}</h3><p><strong>Skill:</strong> ${esc(route.skill_id || "n/a")}</p><p><strong>Input:</strong> ${esc(route.query_text || "")}</p><p style="margin-top:.35rem"><a href="${esc(toUrl(route.agent_url))}" target="_blank" rel="noopener noreferrer">${esc(route.agent_url || "")}</a></p></div>`).join("")}</div></div>` : '<div class="empty">Routing has not produced downstream calls yet.</div>';
+        const agentsHtml = agents.length ? `<div><div class="section">Discovered Agents</div><div class="items">${agents.map((agent) => `<div class="mini"><h3>${esc(agent.name || agent.agent_name || "Unnamed agent")}</h3><p>${esc(agent.description || "No description")}</p><ul>${hasDisplayValue(agent.card_url) ? `<li><strong>Card:</strong> <a href="${esc(toUrl(agent.card_url))}" target="_blank" rel="noopener noreferrer">${esc(agent.card_url)}</a></li>` : ""}${hasDisplayValue(agent.url) ? `<li><strong>Endpoint:</strong> <a href="${esc(toUrl(agent.url))}" target="_blank" rel="noopener noreferrer">${esc(agent.url)}</a></li>` : ""}<li><strong>Skills:</strong> ${esc(arr(agent.skills).map((skill) => skill.name).join(", ") || "None")}</li></ul></div>`).join("")}</div></div>` : '<div class="empty">No discovered agent cards yet.</div>';
+        const routesHtml = routing && arr(routing.routes).length ? `<div><div class="section">Resolved Routes</div><div class="pills"><span class="pill">Products: ${routing.needs_product_discovery ? "yes" : "no"}</span><span class="pill">Reviews: ${routing.needs_youtube_reviews ? "yes" : "no"}</span></div><div class="items">${routing.routes.map((route) => `<div class="mini"><h3>${esc(route.agent_name)}</h3>${hasDisplayValue(route.skill_id) ? `<p><strong>Skill:</strong> ${esc(route.skill_id)}</p>` : ""}${hasDisplayValue(route.query_text) ? `<p><strong>Input:</strong> ${esc(route.query_text)}</p>` : ""}<p style="margin-top:.35rem"><a href="${esc(toUrl(route.agent_url))}" target="_blank" rel="noopener noreferrer">${esc(route.agent_url || "")}</a></p></div>`).join("")}</div></div>` : '<div class="empty">Routing has not produced downstream calls yet.</div>';
         el.discovery.innerHTML = agentsHtml + routesHtml;
       }
 
@@ -266,7 +264,7 @@
         el.product.innerHTML = `
           <div class="pills">
             <span class="pill">Stage: ${esc(trace.stage || "unknown")}</span>
-            <span class="pill">Search query: ${esc(trace.search_query || "n/a")}</span>
+            ${hasDisplayValue(trace.search_query) ? `<span class="pill">Search query: ${esc(trace.search_query)}</span>` : ""}
             <span class="pill">Candidates: ${esc(trace.candidate_count ?? arr(trace.candidates).length)}</span>
           </div>
           <div>
@@ -275,19 +273,19 @@
           </div>
           <div>
             <div class="section">Raw Search Candidates</div>
-            ${cards(arr(trace.candidates), (c) => `<div class="mini"><h3>${esc(c.title || "Untitled result")}</h3><p>${esc(c.snippet || "No snippet")}</p><ul><li><strong>Merchant:</strong> ${esc(c.merchant || "unknown")}</li><li><strong>Matched query:</strong> ${esc(c.matched_query || "n/a")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul></div>`, candidateEmpty)}
+            ${cards(arr(trace.candidates), (c) => `<div class="mini"><h3>${esc(c.title || "Untitled result")}</h3><p>${esc(c.snippet || "No snippet")}</p><ul><li><strong>Merchant:</strong> ${esc(c.merchant || "unknown")}</li>${hasDisplayValue(c.matched_query) ? `<li><strong>Matched query:</strong> ${esc(c.matched_query)}</li>` : ""}${hasDisplayValue(c.url) ? `<li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url)}</a></li>` : ""}</ul></div>`, candidateEmpty)}
           </div>
           <div>
             <div class="section">Enriched Candidates</div>
-            ${cards(arr(trace.enriched_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><ul><li><strong>Price:</strong> ${esc(c.price || "N/A")}</li><li><strong>Rating:</strong> ${esc(c.rating || "N/A")}</li><li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></li></ul>${c.page_excerpt ? `<div class="excerpt">${esc(c.page_excerpt)}</div>` : ""}</div>`, enrichmentEmpty)}
+            ${cards(arr(trace.enriched_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><ul>${hasDisplayValue(c.price) ? `<li><strong>Price:</strong> ${esc(c.price)}</li>` : ""}${hasDisplayValue(c.rating) ? `<li><strong>Rating:</strong> ${esc(c.rating)}</li>` : ""}${hasDisplayValue(c.url) ? `<li><strong>URL:</strong> <a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url)}</a></li>` : ""}</ul>${c.page_excerpt ? `<div class="excerpt">${esc(c.page_excerpt)}</div>` : ""}</div>`, enrichmentEmpty)}
           </div>
           <div>
             <div class="section">Filtered Shortlist Candidates</div>
-            ${cards(arr(trace.filtered_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><div class="pills"><span class="pill">Score: ${esc(c.shortlist_score ?? "n/a")}</span>${c.price ? `<span class="pill">${esc(c.price)}</span>` : ""}${c.rating ? `<span class="pill">${esc(c.rating)}</span>` : ""}</div><p style="margin-top:.45rem">${esc(arr(c.shortlist_reasons).join(" • ") || "No shortlist reasons captured")}</p><p style="margin-top:.35rem"><a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url || "n/a")}</a></p></div>`, filteredEmpty)}
+            ${cards(arr(trace.filtered_candidates), (c) => `<div class="mini"><h3>${esc(c.enriched_title || c.title || "Candidate")}</h3><div class="pills">${hasDisplayValue(c.shortlist_score) ? `<span class="pill">Score: ${esc(c.shortlist_score)}</span>` : ""}${hasDisplayValue(c.price) ? `<span class="pill">${esc(c.price)}</span>` : ""}${hasDisplayValue(c.rating) ? `<span class="pill">${esc(c.rating)}</span>` : ""}</div><p style="margin-top:.45rem">${esc(arr(c.shortlist_reasons).join(" | ") || "No shortlist reasons captured")}</p>${hasDisplayValue(c.url) ? `<p style="margin-top:.35rem"><a href="${esc(toUrl(c.url))}" target="_blank" rel="noopener noreferrer">${esc(c.url)}</a></p>` : ""}</div>`, filteredEmpty)}
           </div>
           <div>
             <div class="section">Candidate Entities</div>
-            ${cards(candidateEntities, (entity) => `<div class="mini"><h3>${esc(entity.name || "Unnamed entity")}</h3><div class="pills"><span class="pill">Support: ${esc(entity.support ?? 0)}</span><span class="pill">Detail pages: ${esc(entity.product_page_support ?? 0)}</span>${entity.price_support ? `<span class="pill">Prices: ${esc(entity.price_support)}</span>` : ""}</div><p style="margin-top:.35rem">${esc(arr(entity.candidate_urls).slice(0, 2).join(" â€¢ ") || "No URLs captured")}</p></div>`, "Waiting for clustered candidate entities...")}
+            ${cards(candidateEntities, (entity) => `<div class="mini"><h3>${esc(entity.name || "Unnamed entity")}</h3><div class="pills"><span class="pill">Support: ${esc(entity.support ?? 0)}</span><span class="pill">Detail pages: ${esc(entity.product_page_support ?? 0)}</span>${entity.price_support ? `<span class="pill">Prices: ${esc(entity.price_support)}</span>` : ""}</div><p style="margin-top:.35rem">${esc(arr(entity.candidate_urls).slice(0, 2).join(" | ") || "No URLs captured")}</p></div>`, "Waiting for clustered candidate entities...")}
           </div>
           <div>
             <div class="section">Finalized Products</div>
@@ -295,7 +293,7 @@
           </div>
           <div>
             <div class="section">Shortlist Reasons</div>
-            ${cards(arr(trace.shortlist_reasons), (item) => `<div class="mini"><h3>${esc(item.product_name || "Product")}</h3><div class="pills">${item.confidence != null ? `<span class="pill">Confidence: ${esc(item.confidence)}</span>` : ""}${arr(item.evidence_urls).length ? `<span class="pill">Evidence: ${esc(arr(item.evidence_urls).length)}</span>` : ""}</div><p style="margin-top:.45rem">${esc(arr(item.reasons).join(" • ") || "No shortlist reasons captured")}</p></div>`, "Waiting for final shortlist reasons...")}
+            ${cards(arr(trace.shortlist_reasons), (item) => `<div class="mini"><h3>${esc(item.product_name || "Product")}</h3><div class="pills">${item.confidence != null ? `<span class="pill">Confidence: ${esc(item.confidence)}</span>` : ""}${arr(item.evidence_urls).length ? `<span class="pill">Evidence: ${esc(arr(item.evidence_urls).length)}</span>` : ""}</div><p style="margin-top:.45rem">${esc(arr(item.reasons).join(" | ") || "No shortlist reasons captured")}</p></div>`, "Waiting for final shortlist reasons...")}
           </div>
           <div>
             <div class="section">Rejected Entities</div>
@@ -312,14 +310,14 @@
       function renderReviews(snapshot) {
         const entries = Object.entries(snapshot.review_traces || {});
         if (!entries.length) { el.reviews.innerHTML = '<div class="empty">YouTube review trace data will appear here once review tasks start returning snapshots.</div>'; return; }
-        el.reviews.innerHTML = entries.map(([name, trace]) => `<div class="mini"><h3>${esc(name)}</h3><div class="pills"><span class="pill">Stage: ${esc(trace.stage || "unknown")}</span><span class="pill">Query: ${esc(trace.search_query || "n/a")}</span></div><div class="section" style="margin-top:.8rem">Chosen Videos</div>${arr(trace.ranked_videos).length ? `<div class="items">${arr(trace.ranked_videos).map((video) => `<div class="mini"><h3>${esc(video.title || "Untitled video")}</h3><p>${esc(video.channel || "Unknown channel")}</p><ul><li><strong>Published:</strong> ${esc(video.published_at || "N/A")}</li><li><strong>Views:</strong> ${esc(video.view_count || "N/A")}</li><li><a href="${esc(toUrl(video.url))}" target="_blank" rel="noopener noreferrer">Open video</a></li></ul></div>`).join("")}</div>` : '<div class="empty">Waiting for video selection...</div>'}<div class="section" style="margin-top:.8rem">Transcript Evidence</div>${arr(trace.evidence).length ? `<div class="stack">${arr(trace.evidence).map((video) => `<div class="mini"><h3>${esc(video.title || "Video evidence")}</h3><p>${esc(video.channel || "Unknown channel")} | ${esc(video.evidence_source || "source n/a")}</p>${video.url ? `<p style="margin-top:.35rem"><a href="${esc(toUrl(video.url))}" target="_blank" rel="noopener noreferrer">${esc(video.url)}</a></p>` : ""}${video.transcript_excerpt ? `<div class="excerpt">${esc(video.transcript_excerpt)}</div>` : ""}</div>`).join("")}</div>` : '<div class="empty">Waiting for transcript snippets...</div>'}<div class="section" style="margin-top:.8rem">Structured Summary</div>${trace.summary ? `<div class="summary"><div class="note"><strong>Sentiment:</strong> ${esc(trace.summary.overall_sentiment || "n/a")} | <strong>Score:</strong> ${esc(trace.summary.score ?? "n/a")} | <strong>Confidence:</strong> ${esc(trace.summary.confidence ?? "n/a")}</div><div class="note" style="margin-top:.55rem">${esc(trace.summary.recommendation || "No recommendation text")}</div><div class="pills" style="margin-top:.65rem">${arr(trace.summary.pros).map((i) => `<span class="pill">${esc(i)}</span>`).join("")}${arr(trace.summary.cons).map((i) => `<span class="pill" style="background:rgba(239,68,68,.12);color:#ffb3b3">${esc(i)}</span>`).join("")}</div></div>` : '<div class="empty">Waiting for the review summary...</div>'}</div>`).join("");
+        el.reviews.innerHTML = entries.map(([name, trace]) => `<div class="mini"><h3>${esc(name)}</h3><div class="pills"><span class="pill">Stage: ${esc(trace.stage || "unknown")}</span>${hasDisplayValue(trace.search_query) ? `<span class="pill">Query: ${esc(trace.search_query)}</span>` : ""}</div><div class="section" style="margin-top:.8rem">Chosen Videos</div>${arr(trace.ranked_videos).length ? `<div class="items">${arr(trace.ranked_videos).map((video) => `<div class="mini"><h3>${esc(video.title || "Untitled video")}</h3><p>${esc(video.channel || "Unknown channel")}</p><ul>${hasDisplayValue(video.published_at) ? `<li><strong>Published:</strong> ${esc(video.published_at)}</li>` : ""}${hasDisplayValue(video.view_count) ? `<li><strong>Views:</strong> ${esc(video.view_count)}</li>` : ""}<li><a href="${esc(toUrl(video.url))}" target="_blank" rel="noopener noreferrer">Open video</a></li></ul></div>`).join("")}</div>` : '<div class="empty">Waiting for video selection...</div>'}<div class="section" style="margin-top:.8rem">Transcript Evidence</div>${arr(trace.evidence).length ? `<div class="stack">${arr(trace.evidence).map((video) => `<div class="mini"><h3>${esc(video.title || "Video evidence")}</h3><p>${esc(video.channel || "Unknown channel")}${hasDisplayValue(video.evidence_source) ? ` | ${esc(video.evidence_source)}` : ""}</p>${video.url ? `<p style="margin-top:.35rem"><a href="${esc(toUrl(video.url))}" target="_blank" rel="noopener noreferrer">${esc(video.url)}</a></p>` : ""}${video.transcript_excerpt ? `<div class="excerpt">${esc(video.transcript_excerpt)}</div>` : ""}</div>`).join("")}</div>` : '<div class="empty">Waiting for transcript snippets...</div>'}<div class="section" style="margin-top:.8rem">Structured Summary</div>${trace.summary ? `<div class="summary"><div class="note">${hasDisplayValue(trace.summary.overall_sentiment) ? `<strong>Sentiment:</strong> ${esc(trace.summary.overall_sentiment)}` : ""}${hasDisplayValue(trace.summary.score) ? `${hasDisplayValue(trace.summary.overall_sentiment) ? " | " : ""}<strong>Score:</strong> ${esc(trace.summary.score)}` : ""}${hasDisplayValue(trace.summary.confidence) ? `${hasDisplayValue(trace.summary.overall_sentiment) || hasDisplayValue(trace.summary.score) ? " | " : ""}<strong>Confidence:</strong> ${esc(trace.summary.confidence)}` : ""}</div><div class="note" style="margin-top:.55rem">${esc(trace.summary.recommendation || "No recommendation text")}</div><div class="pills" style="margin-top:.65rem">${arr(trace.summary.pros).map((i) => `<span class="pill">${esc(i)}</span>`).join("")}${arr(trace.summary.cons).map((i) => `<span class="pill" style="background:rgba(239,68,68,.12);color:#ffb3b3">${esc(i)}</span>`).join("")}</div></div>` : '<div class="empty">Waiting for the review summary...</div>'}</div>`).join("");
       }
 
       function renderFinal(snapshot) {
         const final = snapshot.final_response;
         const synthesis = snapshot.synthesis || null;
         if (!final) { el.final.innerHTML = '<div class="empty">The unified response will appear here when synthesis completes.</div>'; return; }
-        el.final.innerHTML = `${synthesis ? `<div class="pills"><span class="pill">Synthesis: ${esc(synthesis.status || "done")}</span><span class="pill">Recommendations: ${esc(synthesis.recommendation_count ?? arr(final.recommendations).length)}</span><span class="pill">Sources: ${esc(synthesis.source_count ?? arr(final.sources).length)}</span></div>` : ""}${final.notes ? `<div class="error" style="margin-top:0;margin-bottom:.85rem">${esc(final.notes)}</div>` : ""}<div class="stack">${arr(final.recommendations).length ? arr(final.recommendations).map((item, index) => `<div class="rec"><div class="rec-top"><div style="display:flex;gap:.75rem;align-items:flex-start"><div class="rank">${esc(item.rank ?? index + 1)}</div><div><div class="title">${esc(item.product_name || "Unnamed product")}</div><div class="pills" style="margin-top:.4rem">${item.price ? `<span class="pill">${esc(item.price)}</span>` : ""}${item.rating ? `<span class="pill">${esc(item.rating)}</span>` : ""}<span class="pill ${item.sentiment ? `sentiment-${esc(item.sentiment)}` : ""}">${esc(item.sentiment || "unknown")}</span></div></div></div><div class="score">${esc(item.score ?? "N/A")}</div></div><div class="note">${esc(item.rationale || "No rationale provided.")}</div><div class="pills" style="margin-top:.65rem">${arr(item.pros).map((p) => `<span class="pill" style="background:rgba(34,197,94,.12);color:#96f0b7">${esc(p)}</span>`).join("")}${arr(item.cons).map((c) => `<span class="pill" style="background:rgba(239,68,68,.12);color:#ffb3b3">${esc(c)}</span>`).join("")}</div></div>`).join("") : '<div class="empty">No recommendations returned.</div>'}</div><div class="section" style="margin-top:.9rem">Sources shown to the user</div>${arr(final.sources).length ? `<div class="sources">${arr(final.sources).map((source) => `<a class="source" href="${esc(toUrl(source.url))}" target="_blank" rel="noopener noreferrer">${esc(source.title || source.url || "Untitled source")}<small>${esc(source.agent || "unknown agent")} | ${esc(source.type || "source")}</small></a>`).join("")}</div>` : '<div class="empty">No source links were returned.</div>'}`;
+        el.final.innerHTML = `${synthesis ? `<div class="pills"><span class="pill">Synthesis: ${esc(synthesis.status || "done")}</span><span class="pill">Recommendations: ${esc(synthesis.recommendation_count ?? arr(final.recommendations).length)}</span><span class="pill">Sources: ${esc(synthesis.source_count ?? arr(final.sources).length)}</span></div>` : ""}${final.notes ? `<div class="error" style="margin-top:0;margin-bottom:.85rem">${esc(final.notes)}</div>` : ""}<div class="stack">${arr(final.recommendations).length ? arr(final.recommendations).map((item, index) => `<div class="rec"><div class="rec-top"><div style="display:flex;gap:.75rem;align-items:flex-start"><div class="rank">${esc(item.rank ?? index + 1)}</div><div><div class="title">${esc(item.product_name || "Unnamed product")}</div><div class="pills" style="margin-top:.4rem">${hasDisplayValue(item.price) ? `<span class="pill">${esc(item.price)}</span>` : ""}${hasDisplayValue(item.rating) ? `<span class="pill">${esc(item.rating)}</span>` : ""}${hasDisplayValue(item.sentiment) ? `<span class="pill ${item.sentiment ? `sentiment-${esc(item.sentiment)}` : ""}">${esc(item.sentiment)}</span>` : ""}</div></div></div><div class="score">${hasDisplayValue(item.score) ? esc(item.score) : ""}</div></div><div class="note">${esc(item.rationale || "No rationale provided.")}</div><div class="pills" style="margin-top:.65rem">${arr(item.pros).map((p) => `<span class="pill" style="background:rgba(34,197,94,.12);color:#96f0b7">${esc(p)}</span>`).join("")}${arr(item.cons).map((c) => `<span class="pill" style="background:rgba(239,68,68,.12);color:#ffb3b3">${esc(c)}</span>`).join("")}</div></div>`).join("") : '<div class="empty">No recommendations returned.</div>'}</div><div class="section" style="margin-top:.9rem">Sources shown to the user</div>${arr(final.sources).length ? `<div class="sources">${arr(final.sources).map((source) => `<a class="source" href="${esc(toUrl(source.url))}" target="_blank" rel="noopener noreferrer">${esc(source.title || source.url || "Untitled source")}<small>${esc(source.agent || "unknown agent")} | ${esc(source.type || "source")}</small></a>`).join("")}</div>` : '<div class="empty">No source links were returned.</div>'}`;
       }
 
       function render() {
@@ -385,7 +383,6 @@
         }
       }
 
-      renderHints();
       el.button.addEventListener("click", () => { void start(); });
       el.input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void start(); } });
       el.input.addEventListener("input", () => { el.button.disabled = state.starting || !el.input.value.trim(); });
@@ -395,3 +392,4 @@
   </script>
 </body>
 </html>
+

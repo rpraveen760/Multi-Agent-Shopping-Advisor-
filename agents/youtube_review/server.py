@@ -25,18 +25,9 @@ from common.a2a_models import (
 )
 from common.a2a_server import InMemoryTaskStore, create_a2a_routes
 from common.config import configure_logging, get_settings
+from common.runtime_helpers import format_exception_detail
 
 logger = logging.getLogger(__name__)
-
-
-def _format_exception_detail(exc: Exception) -> str:
-    text = str(exc).strip()
-    exc_name = type(exc).__name__
-    if not text:
-        return exc_name
-    if text.startswith(exc_name):
-        return text
-    return f"{exc_name}: {text}"
 
 # ── Agent Card ────────────────────────────────────────────────────
 
@@ -157,7 +148,7 @@ async def handle_send_message(
 
     except Exception as exc:
         logger.exception("Review pipeline failed for: %s", product_name)
-        detail = _format_exception_detail(exc)
+        detail = format_exception_detail(exc)
         task.status = TaskStatus(
             state="failed",
             message=make_agent_message(f"Failed to get reviews for {product_name}: {detail}"),

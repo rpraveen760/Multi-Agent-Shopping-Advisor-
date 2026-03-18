@@ -159,26 +159,6 @@
     .search-btn:hover:not(:disabled) { transform: translateY(-1px); }
     .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .search-hints {
-      display: flex;
-      gap: 0.5rem;
-      margin-top: 0.75rem;
-      flex-wrap: wrap;
-    }
-
-    .hint-chip {
-      background: rgba(26, 34, 52, 0.95);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 0.3rem 0.8rem;
-      font-size: 0.78rem;
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .hint-chip:hover { border-color: var(--accent); color: var(--accent); }
-
     .trace-link {
       color: var(--cyan);
       text-decoration: none;
@@ -631,7 +611,6 @@
             <input id="query-input" class="search-input" placeholder="What are you shopping for?" autocomplete="off" />
             <button id="search-button" class="search-btn" type="button">Search</button>
           </div>
-          <div id="search-hints" class="search-hints"></div>
           <div style="margin-top: 0.85rem; font-size: 0.82rem; color: var(--text-secondary);">
             Want to watch the orchestration live? <a class="trace-link" href="/trace">Open Live Trace</a>
           </div>
@@ -670,8 +649,8 @@
         <div class="features-hero">
           <h1>Federated Multi-Agent System</h1>
           <p>
-            Autonomous agents collaborate via the A2A protocol, orchestrated by LangGraph,
-            to deliver grounded product recommendations from real-world data.
+            The orchestrator discovers agents through A2A, executes Product Discovery through MCP,
+            finalizes a shortlist first, and only then fans out YouTube review analysis.
           </p>
         </div>
 
@@ -723,7 +702,7 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Route Tasks</h4>
-                <p>Structured query understanding and LLM-guided routing decide which agents to invoke while still keeping the execution graph explicit and testable.</p>
+                <p>GPT-4o-mini interprets the query once, and the orchestrator then assembles routes deterministically from the discovered services and the structured query understanding.</p>
               </div>
             </div>
             <div class="pipeline-step step-3">
@@ -731,7 +710,7 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Execute Product Discovery</h4>
-                <p>Invoke the MCP <code>search_products</code> tool. The product agent searches DuckDuckGo, enriches candidates, grounds product links against evidence, and returns normalized product data to the orchestrator.</p>
+                <p>Invoke the MCP <code>search_products</code> tool on the discovered Product Discovery service. The agent expands the query, gathers evidence, finalizes up to three real products, and prefers better grounded product links when it can upgrade them.</p>
               </div>
             </div>
             <div class="pipeline-step step-4">
@@ -739,14 +718,14 @@
               <div class="step-line"></div>
               <div class="step-content">
                 <h4>Execute YouTube Reviews</h4>
-                <p>Fan out review requests for discovered products with bounded concurrency. The agent selects videos, extracts transcript evidence, builds sentiment-backed review summaries, and publishes in-flight trace data.</p>
+                <p>Only finalized shortlist items are sent to the YouTube Review agent. It selects videos, extracts transcript evidence, builds sentiment-backed summaries, and publishes live review trace updates.</p>
               </div>
             </div>
             <div class="pipeline-step step-5">
               <div class="step-marker">5</div>
               <div class="step-content">
                 <h4>Synthesize</h4>
-                <p>GPT-4o-mini merges product signals and review evidence into a ranked response, including explicit source links, while the orchestrator can expose a live trace view of the full run.</p>
+                <p>GPT-4o-mini merges finalized product data and review evidence into a ranked response with explicit sources, while the orchestrator keeps partial-result handling and live trace visibility intact.</p>
               </div>
             </div>
           </div>
@@ -757,7 +736,7 @@
           <div class="feature-grid">
             <div class="feature-card">
               <h4><span class="feature-icon">R</span> Structured Routing</h4>
-              <p>GPT-4o-mini reformulates the query and produces a constrained routing decision, while the orchestrator still keeps the execution graph explicit and predictable.</p>
+              <p>The query is understood once with GPT-4o-mini, then the orchestrator assembles downstream routes deterministically so execution stays predictable.</p>
             </div>
             <div class="feature-card">
               <h4><span class="feature-icon">U</span> URL Grounding</h4>
@@ -781,7 +760,7 @@
             </div>
             <div class="feature-card">
               <h4><span class="feature-icon">L</span> Live Traceability</h4>
-              <p>A traced query mode records discovery, routing, task polling, selected videos, transcript evidence, and the final grounded response in real time.</p>
+              <p>A traced query records discovery, shortlist formation, review fan-out, transcript evidence, and the final grounded response in real time.</p>
             </div>
           </div>
         </div>
@@ -795,11 +774,11 @@
             </div>
             <div class="protocol-card">
               <h4>MCP</h4>
-              <p>Product Discovery is discovered through A2A and executed through its MCP <code>search_products</code> endpoint on the running service instance, with A2A kept as a resilient fallback path.</p>
+              <p>Product Discovery is discovered through A2A, then executed through its MCP <code>search_products</code> endpoint on the running service instance, with A2A retained as a resilient fallback path.</p>
             </div>
             <div class="protocol-card">
               <h4>LangGraph</h4>
-              <p>StateGraph orchestration coordinates discovery, LLM-guided routing, product search, review fan-out, and synthesis in an explicit, typed workflow.</p>
+              <p>StateGraph orchestration coordinates discovery, one query-understanding step, deterministic routing, shortlist-first product search, review fan-out, and synthesis in an explicit workflow.</p>
             </div>
             <div class="protocol-card">
               <h4>JSON-RPC 2.0</h4>
@@ -826,13 +805,6 @@
         systemLabel: "Checking system",
       };
 
-      const hints = [
-        "RTX 5070",
-        "Ryzen 9 9950",
-        "Razer Cobra Gaming Mouse",
-        "Wacom Cintiq 16",
-      ];
-
       const loadingSteps = [
         { label: "Discovering agents", t: 0 },
         { label: "Routing query", t: 1 },
@@ -847,7 +819,6 @@
       const elements = {
         queryInput: document.getElementById("query-input"),
         searchButton: document.getElementById("search-button"),
-        searchHints: document.getElementById("search-hints"),
         loadingContainer: document.getElementById("loading-container"),
         loadingSteps: document.getElementById("loading-steps"),
         errorBox: document.getElementById("error-box"),
@@ -891,13 +862,24 @@
       function formatPercent(value) {
         return typeof value === "number" && Number.isFinite(value)
           ? `${Math.round(value * 100)}`
-          : "N/A";
+          : "";
       }
 
       function formatConfidence(value) {
         return typeof value === "number" && Number.isFinite(value)
           ? `${Math.round(value * 100)}% confidence`
-          : "confidence unavailable";
+          : "";
+      }
+
+      function hasDisplayValue(value) {
+        if (value === null || value === undefined) {
+          return false;
+        }
+        if (typeof value === "string") {
+          const normalized = value.trim().toLowerCase();
+          return normalized !== "" && normalized !== "n/a" && normalized !== "na" && normalized !== "null" && normalized !== "none";
+        }
+        return true;
       }
 
       function sentimentClass(sentiment) {
@@ -905,23 +887,6 @@
           return `sentiment-${sentiment}`;
         }
         return "sentiment-unknown";
-      }
-
-      function renderHints() {
-        elements.searchHints.innerHTML = hints
-          .map(
-            (hint) =>
-              `<button type="button" class="hint-chip" data-query="${escapeHtml(hint)}">${escapeHtml(hint)}</button>`
-          )
-          .join("");
-
-        elements.searchHints.querySelectorAll(".hint-chip").forEach((button) => {
-          button.addEventListener("click", () => {
-            const value = button.getAttribute("data-query") || "";
-            elements.queryInput.value = value;
-            void runSearch(value);
-          });
-        });
       }
 
       function renderLoadingSteps() {
@@ -989,6 +954,8 @@
 
             const score = formatPercent(rec.score);
             const confidence = formatConfidence(rec.confidence);
+            const hasMeta = hasDisplayValue(rec.price) || hasDisplayValue(rec.rating) || hasDisplayValue(rec.sentiment);
+            const hasScoreBlock = hasDisplayValue(score) || hasDisplayValue(confidence);
 
             return `
               <div class="rec-card">
@@ -996,16 +963,16 @@
                   <div class="rec-rank ${rankClass}">${escapeHtml(rec.rank ?? index + 1)}</div>
                   <div class="rec-info">
                     <div class="rec-name">${escapeHtml(rec.product_name || "Unnamed product")}</div>
-                    <div class="rec-meta">
-                      ${rec.price ? `<span class="rec-meta-item">${escapeHtml(rec.price)}</span>` : ""}
-                      ${rec.rating ? `<span class="rec-meta-item">${escapeHtml(rec.rating)}</span>` : ""}
-                      <span class="sentiment-badge ${sentimentClass(rec.sentiment)}">${escapeHtml(rec.sentiment || "unknown")}</span>
-                    </div>
+                    ${hasMeta ? `<div class="rec-meta">
+                      ${hasDisplayValue(rec.price) ? `<span class="rec-meta-item">${escapeHtml(rec.price)}</span>` : ""}
+                      ${hasDisplayValue(rec.rating) ? `<span class="rec-meta-item">${escapeHtml(rec.rating)}</span>` : ""}
+                      ${hasDisplayValue(rec.sentiment) ? `<span class="sentiment-badge ${sentimentClass(rec.sentiment)}">${escapeHtml(rec.sentiment)}</span>` : ""}
+                    </div>` : ""}
                   </div>
-                  <div class="rec-score-wrap">
-                    <div class="rec-score">${escapeHtml(score)}</div>
-                    <div class="rec-confidence">${escapeHtml(confidence)}</div>
-                  </div>
+                  ${hasScoreBlock ? `<div class="rec-score-wrap">
+                    ${hasDisplayValue(score) ? `<div class="rec-score">${escapeHtml(score)}</div>` : ""}
+                    ${hasDisplayValue(confidence) ? `<div class="rec-confidence">${escapeHtml(confidence)}</div>` : ""}
+                  </div>` : ""}
                 </div>
                 <div class="rec-rationale">${escapeHtml(rec.rationale || "No rationale provided.")}</div>
                 ${prosConsHtml}
@@ -1195,7 +1162,6 @@
       }
 
       function init() {
-        renderHints();
         bindEvents();
         renderPageState();
         void refreshSystemStatus();
